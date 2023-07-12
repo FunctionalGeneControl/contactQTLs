@@ -1,0 +1,362 @@
+---
+title: "GUESS_betas"
+author: "Helen Ray-Jones"
+date: "2023-05-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "~/HRJ_monocytes/leo_triplets")
+knitr::opts_knit$set(root.dir = "~/Documents/analysis/from_leo/comparisons")
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(data.table)
+library(ggplot2)
+library(forcats)
+library(kableExtra)
+library(confintr)
+```
+
+### Load data
+
+```{r load datasets}
+#trip <- fread("./results/dec22/filtered/PP_stats_triplet_SMALL_Dec22_DpnFilt.txt")
+
+trip <- fread("../dec22/filtered/PP_stats_triplet_SMALL_Dec22_DpnFilt.txt")
+trip_5 <- fread("../jul23/PP_stats_triplet_mPPI_FDR_0.05_SMALL/PP_stats_triplet_mPPI_FDR_0.05_SMALL.txt")
+trip_1 <- fread("../jul23/PP_stats_triplet_mPPI_FDR_0.01_SMALL/PP_stats_triplet_mPPI_FDR_0.01_SMALL.txt")
+
+trip_betas <- fread("../mar23/filtered/final_GUESS_results_DpnII_distal_betas_AI_CORRECTED.txt")
+
+```
+
+### Plot the betas in GUESS against each other. Still looking at single SNP models. Find suspicious SNPs that are high in one modality but low in another.
+
+```{R moretables_}
+
+trip_one <- trip_betas[!`Post-proc. FDR mPPI SNP` %like% ","]
+
+trip_one_noNA <- trip_one[!is.na(GUESS_chic_beta)]
+
+# just look at effects of changing the probability for the model
+
+trip_one_noNA[`Post-proc. best model post. prob.` > 0 & `Post-proc. best model post. prob.` < 0.9, Post.prob := "<0.9 post prob"]
+trip_one_noNA[`Post-proc. best model post. prob.` >= 0.90 & `Post-proc. best model post. prob.` < 0.95, Post.prob := "0.90 post prob"]
+trip_one_noNA[`Post-proc. best model post. prob.` >= 0.95 & `Post-proc. best model post. prob.` < 0.99, Post.prob := "0.95 post prob"]
+trip_one_noNA[`Post-proc. best model post. prob.` >= 0.99, Post.prob := "0.99 post prob"]
+
+# note the concordance in effects.
+trip_one_noNA[GUESS_chic_beta >0 & GUESS_ATAC_beta >0 | GUESS_chic_beta <0 & GUESS_ATAC_beta <0, concordance_CHiC_ATAC := "same"]
+trip_one_noNA[GUESS_chic_beta >0 & GUESS_ATAC_beta <0 | GUESS_chic_beta <0 & GUESS_ATAC_beta >0, concordance_CHiC_ATAC := "opposite"]
+trip_one_noNA[GUESS_chic_beta ==0 | GUESS_ATAC_beta ==0, concordance_CHiC_ATAC := "Unknown"]
+trip_one_noNA[GUESS_chic_beta >0 & GUESS_RNA_beta >0 | GUESS_chic_beta <0 & GUESS_RNA_beta <0, concordance_CHiC_RNA := "same"]
+trip_one_noNA[GUESS_chic_beta >0 & GUESS_RNA_beta <0 | GUESS_chic_beta <0 & GUESS_RNA_beta >0, concordance_CHiC_RNA := "opposite"]
+trip_one_noNA[GUESS_chic_beta ==0 | GUESS_RNA_beta ==0, concordance_CHiC_RNA := "Unknown"]
+trip_one_noNA[GUESS_ATAC_beta >0 & GUESS_RNA_beta >0 | GUESS_ATAC_beta <0 & GUESS_RNA_beta <0, concordance_ATAC_RNA := "same"]
+trip_one_noNA[GUESS_ATAC_beta >0 & GUESS_RNA_beta <0 | GUESS_ATAC_beta <0 & GUESS_RNA_beta >0, concordance_ATAC_RNA := "opposite"]
+trip_one_noNA[GUESS_ATAC_beta ==0 | GUESS_RNA_beta ==0, concordance_ATAC_RNA := "Unknown"]
+
+trip_one_noNA[, concordant := concordance_CHiC_ATAC == "same" & concordance_ATAC_RNA == "same" &
+                concordance_CHiC_RNA == "same"]
+
+# has to be for SNP-feature combinations
+trip_one_noNA[, snp_feat  := paste(`Post-proc. FDR mPPI`, `Triplet name`, sep = "_")]
+con <- length(unique(trip_one_noNA[concordant == T, snp_feat]))
+noncon <- length(unique(trip_one_noNA[concordant == F, snp_feat]))
+total <- length(unique(trip_one_noNA$snp_feat))
+percCon <- (con/total)*100
+percCon
+
+# 48% total concordance
+# test this formally
+binom.test(con, total, 0.25)
+
+# test this formally for chic/atac as well
+chicatac_con <- length(unique(trip_one_noNA[concordance_CHiC_ATAC == "same", snp_feat]))
+chicatac_noncon <- length(unique(trip_one_noNA[concordance_CHiC_ATAC == "opposite", snp_feat]))
+chicatac_total <- length(unique(trip_one_noNA$snp_feat))
+chicatac_percCon <- (chicatac_con/chicatac_total)*100
+chicatac_percCon
+binom.test(chicatac_con, chicatac_total, 0.5)
+
+# 65% chic/atac
+
+```
+### make a graph for all three
+
+```{R threeGraphs}
+
+trip_one_noNA_plot <- unique(trip_one_noNA[, .(`Post-proc. FDR mPPI SNP`, `Triplet name`, GUESS_chic_beta, GUESS_ATAC_beta,                                       GUESS_RNA_beta, `Post-proc. FDR mPPI`)])
+trip_one_noNA_plot[, snp_feat  := paste(`Post-proc. FDR mPPI`, `Triplet name`, sep = "_")]
+pdf(file = "~/Documents/analysis/Paper/GUESS_results/chic_atac_internal_conc_mPPI.pdf")
+print(ggplot(trip_one_noNA_plot, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta, col = `Post-proc. FDR mPPI`)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs ATAC, effect sizes"))
+dev.off()
+trip_one_noNA_plot_cor <- unique(trip_one_noNA_plot[, .(snp_feat, GUESS_chic_beta, GUESS_ATAC_beta, GUESS_RNA_beta)])
+print(cor.test(trip_one_noNA_plot_cor$GUESS_chic_beta, trip_one_noNA_plot_cor$GUESS_ATAC_beta, method = "spearman"))
+
+pdf(file = "~/Documents/analysis/Paper/GUESS_results/atac_rna_internal_conc_mPPI.pdf")
+print(ggplot(trip_one_noNA_plot, aes(x = GUESS_RNA_beta, y = GUESS_ATAC_beta, col = `Post-proc. FDR mPPI`)) + 
+        geom_point() + 
+        xlab("GUESS RNA beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS RNA vs ATAC, effect sizes"))
+dev.off()
+
+print(cor.test(trip_one_noNA_plot_cor$GUESS_RNA_beta, trip_one_noNA_plot_cor$GUESS_ATAC_beta, method = "spearman"))
+
+pdf(file = "~/Documents/analysis/Paper/GUESS_results/chic_rna_internal_conc_mPPI.pdf")
+print(ggplot(trip_one_noNA_plot, aes(x = GUESS_chic_beta, y = GUESS_RNA_beta, col = `Post-proc. FDR mPPI`)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS RNA beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs RNA, effect sizes"))
+dev.off()
+print(cor.test(trip_one_noNA_plot_cor$GUESS_RNA_beta, trip_one_noNA_plot_cor$GUESS_chic_beta, method = "spearman"))
+
+```
+### Compare CHiC with ATAC
+
+```{R betas_CHiC_ATAC}
+print(ggplot(trip_one_noNA, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta, col = `Post-proc. FDR mPPI`)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs ATAC, effect sizes"))
+
+# at high model post probability
+high <- trip_one_noNA[Post.prob == "0.99 post prob" | Post.prob == "0.95 post prob" | Post.prob == "0.90 post prob" ]
+print(ggplot(high, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta, col = Post.prob)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs ATAC, effect sizes"))
+
+highish <- trip_one_noNA[`Post-proc. best model post. prob.` >= 0.95]
+
+print(ggplot(highish, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta, col = Post.prob)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs ATAC, effect sizes"))
+
+very_high <- trip_one_noNA[`Post-proc. best model post. prob.` >= 0.99]
+print(ggplot(very_high, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta,  col = Post.prob)) + 
+        geom_point() + 
+        xlab("GUESS CHi-C beta") +
+        ylab("GUESS ATAC beta") +
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        geom_vline(xintercept = 0, linetype = "dashed") +
+        ggtitle("GUESS CHi-C vs ATAC, effect sizes"))
+
+
+none <- trip_one_noNA[`Post-proc. best model post. prob.` >= 0]
+table(none$concordance_CHiC_ATAC)
+table(none$concordance_CHiC_RNA)
+table(none$concordance_ATAC_RNA)
+seventyfive <- trip_one_noNA[`Post-proc. best model post. prob.` >= 0.75]
+table(seventyfive$concordance_CHiC_ATAC)
+table(seventyfive$concordance_CHiC_RNA)
+table(seventyfive$concordance_ATAC_RNA)
+
+```
+
+### formally test correlation
+### need to actually bring in the 1% FDR because max mPPI doesn't quite work the same.
+
+
+```{R testprobas}
+myprobs <- seq(0.49, 0.99, 0.05)
+
+toplot <- data.table()
+for(prob in myprobs) {
+  cutoff <- trip_one_noNA[`Post-proc. best model post. prob.` >= prob]
+  toTest <- unique(cutoff[, .(`Triplet name`, `Post-proc. FDR mPPI SNP`, GUESS_chic_beta, GUESS_ATAC_beta, GUESS_RNA_beta)])
+  overlaps <- length(unique(toTest$`Post-proc. FDR mPPI SNP`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_chic_beta, toTest$GUESS_ATAC_beta, method="spearman", type = "bootstrap", 
+                                 R = 1612))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Prob_cutoff = prob, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Prob_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("CHiC versus ATAC, correlation at probability cutoffs with 95% CI") +
+  scale_x_continuous(name ="Prob cutoff", breaks = seq(0.5, 1, 0.1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Prob_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[`Post-proc. best model post. prob.` >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_chic_beta, y = GUESS_ATAC_beta)) + 
+  geom_point() + 
+  xlab("GUESS_chic_beta") +
+  ylab("GUESS_ATAC_beta") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS CHiC versus ATAC, effects at model prob >=", cutoff))
+}
+
+
+
+cutoff = 0.8
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+cutoff = 0.99
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+
+
+```
+
+
+
+### Compare CHiC with RNA
+
+
+```{R betas_CHiC_RNA}
+
+myprobs <- seq(0.49, 0.99, 0.05)
+
+toplot <- data.table()
+for(prob in myprobs) {
+  cutoff <- trip_one_noNA[`Post-proc. best model post. prob.` >= prob]
+  toTest <- unique(cutoff[, .(`Triplet name`, `Post-proc. FDR mPPI SNP`, GUESS_chic_beta, GUESS_ATAC_beta, GUESS_RNA_beta)])
+  overlaps <- length(unique(toTest$`Post-proc. FDR mPPI SNP`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_chic_beta, toTest$GUESS_RNA_beta, method="spearman", type = "bootstrap", 
+                                 R = 1612))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Prob_cutoff = prob, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Prob_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("CHiC versus RNA, correlation at probability cutoffs with 95% CI") +
+  scale_x_continuous(name ="Prob cutoff", breaks = seq(0.5, 1, 0.1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Prob_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[`Post-proc. best model post. prob.` >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_chic_beta, y = GUESS_RNA_beta)) + 
+  geom_point() + 
+  xlab("GUESS_chic_beta") +
+  ylab("GUESS_RNA_beta") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS CHiC versus RNA, effects at model prob >=", cutoff))
+}
+
+
+
+cutoff = 0.8
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+cutoff = 0.99
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+
+
+```
+
+
+```{R ATAC versus RNA}
+
+myprobs <- seq(0.49, 0.99, 0.05)
+
+toplot <- data.table()
+for(prob in myprobs) {
+  cutoff <- trip_one_noNA[`Post-proc. best model post. prob.` >= prob]
+  toTest <- unique(cutoff[, .(`Triplet name`, `Post-proc. FDR mPPI SNP`, GUESS_chic_beta, GUESS_ATAC_beta, GUESS_RNA_beta)])
+  overlaps <- length(unique(toTest$`Post-proc. FDR mPPI SNP`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_RNA_beta, toTest$GUESS_ATAC_beta, method="spearman", type = "bootstrap", 
+                                 R = 1612))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Prob_cutoff = prob, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Prob_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("RNA versus ATAC, correlation at probability cutoffs with 95% CI") +
+  scale_x_continuous(name ="Prob cutoff", breaks = seq(0.5, 1, 0.1)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Prob_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[`Post-proc. best model post. prob.` >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_RNA_beta, y = GUESS_ATAC_beta)) + 
+  geom_point() + 
+  xlab("GUESS_chic_beta") +
+  ylab("GUESS_ATAC_beta") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS RNA versus ATAC, effects at model prob >=", cutoff))
+}
+
+
+
+cutoff = 0.8
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+cutoff = 0.99
+p <- make_corPlot(trip_one_noNA, cutoff)
+print(p)
+
+
+
+```
+
+
+
+### At FDR 5%, we improve RNA/CHiC correlation with increasing prob to ~0.8, but this decreases ATAC/RNA
+### We can potentially go to 0.75,  I think this is a good medium
+### Now check at FDR 1%

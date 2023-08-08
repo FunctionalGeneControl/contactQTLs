@@ -27,7 +27,7 @@ rm ${INFILE}.bedpe.temp
 
 ### 2. Intersect the bedpe with the one detailing interactions between eQTLs and eGenes (EDIT THIS BEDPE TO SAY GENE 1, GENE 2 etc)
 cd ${DIR}/bedpe
-eQTL_to_egene=${DIR}/scripts/bedpe_for_chic_egenes_with_Gene_number_CORRECTED.txt # now unique numbers per gene/DpnII/SNP combo
+eQTL_to_egene=${DIR}/scripts/bedpe_for_chic_egenes_with_Gene_number.txt # now unique numbers per gene/DpnII/SNP combo
 ## Run pairtopair, requiring 5% overlap in each case. Ignore strand.
 bedtools pairtopair -a ${INFILE}.bedpe -b ${eQTL_to_egene} -f 0.05 -is > ${INFILE}_eQTLs_to_eGenes.bedpe
 

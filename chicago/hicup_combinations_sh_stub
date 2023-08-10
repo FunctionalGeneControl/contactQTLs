@@ -1,0 +1,19 @@
+#PBS -S /bin/bash
+#PBS -N hicup
+#PBS -l walltime=72:00:00
+#PBS -l select=1:ncpus=32:mem=62gb
+#PBS -o ~/spivakov/HRJ_monocytes/CHiC/hicup_combinations/OU
+#PBS -e ~/spivakov/HRJ_monocytes/CHiC/hicup_combinations/ER
+
+##########################################################
+
+############ This script is a stub for running hicup combo per sample. Put all raw files in a folder and make a samples.list file that gives the basename for each sample.
+
+# Setup path - can leave this
+PATH=$PATH:~/bin/HiCUP_combinations/
+
+####### Run hicup
+module load samtools/1.3.1
+module load anaconda3/personal
+source activate Renv1
+

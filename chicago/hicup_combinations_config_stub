@@ -1,0 +1,14 @@
+#Directory to which output files should be written (optional parameter) #Set to current working directory by default
+Zip: 1
+Keep: 1
+Threads: 8
+Bowtie2: /apps/bowtie2/2.1.0/bowtie2
+Digest: ~/spivakov/HiCUP_settings/HiC_processed_DpnII/Digest_GRCh38_DpnII_None_11-24-01_12-06-2019.txt
+Index: ~/spivakov/MDR/GRCh38/bowtie2/Homo_sapiens.GRCh38
+R: ~/anaconda3/envs/Renv1/bin/R
+Format: Illumina_1.5
+Shortest: 50
+Longest: 800
+
+# FASTQ files to be analysed. Put pairs on adjacent lines.
+

@@ -1,0 +1,509 @@
+
+rm(list = ls(all = TRUE))
+digits <- 3
+
+
+#########
+# Setup #
+#########
+
+Egam <- 1   # ***
+Sgam <- 1   # ***
+nsweep <- 20000   # ***
+burnin <- 5000   # ***
+nchain <- 3
+
+
+#####################
+# Loading libraries #
+#####################
+
+library("R2GUESS")
+
+
+#####################
+# Setup directories #
+#####################
+
+# Working directory
+setwd("/home/lb664/")
+
+# Path directory
+path.in <- "Data/R2GUESS/"
+path.R2GUESS.in <- "Data/R2GUESS/"
+path.out <- "Programs/R/R2GUESS/Output/"
+path.par <- "Programs/R/R2GUESS/Par/"
+
+
+#---------------------------------
+#### Helper functions
+#---------------------------------
+
+get_snps <- function(triplet_with_regions,snp_locs)
+{
+  chr <- triplet_with_regions$chr
+  start <- triplet_with_regions$final_region_start
+  end <- triplet_with_regions$final_region_end
+  snp_locs <- snp_locs
+  
+  tmp_snps <- snp_locs[snp_locs$chrom %in% chr,]
+  tmp_snps <- tmp_snps[tmp_snps$position>start & tmp_snps$position<end,]
+  
+  ##check that snps are also within 1Mb of RNA feature, which they all should be
+  rna_start <- triplet_with_regions$rna_start
+  rna_end <- triplet_with_regions$rna_end
+  tmp_snps$left <- abs(rna_start-tmp_snps$position)
+  tmp_snps$right <- abs(rna_end-tmp_snps$position)
+  
+  tmp_snps <- tmp_snps[tmp_snps$left<1e6 | tmp_snps$right<1e6,]
+  
+  return(tmp_snps$annot)
+}
+
+create_regions <- function(triplet_list,chic_loc,atac_loc,rna_loc,cisdist=5e3)
+{
+  triplet_list$atac_rna<-paste0(triplet_list$atac_feature,"_",triplet_list$rna_feature)
+  
+  triplet_list_results <- list()
+  cisdist <- cisdist
+  
+  for(i in 1:length(unique(triplet_list$atac_rna)))
+  {
+    ###determine region
+    tmp_triplet <- triplet_list[triplet_list$atac_rna %in% unique(triplet_list$atac_rna)[i],]
+    tmp_triplet$chr <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$chr
+    
+    #chic locations
+    tmp_triplet$chic_start <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$left
+    tmp_triplet$chic_end <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$right
+    
+    #rna locations
+    tmp_triplet$rna_start <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$left
+    tmp_triplet$rna_end <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$right
+    
+    #atac locations
+    tmp_triplet$atac_start <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$left
+    tmp_triplet$atac_end <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$right
+    
+    ##check that "start" is always smaller than "end"
+    all(tmp_triplet$chic_start<tmp_triplet$chic_end)
+    
+    ##create region
+    chic_start <- min(tmp_triplet$chic_start)-cisdist
+    chic_end <- max(tmp_triplet$chic_end)+cisdist
+    chr <- tmp_triplet$chr[1]
+    
+    ##now create atac ranges
+    atac_start <- tmp_triplet$atac_start[1]-cisdist
+    atac_end <- tmp_triplet$atac_end[1]+cisdist
+    
+    ##define intersected region
+    if(atac_end>chic_start & atac_start<chic_start & atac_end<chic_end)
+    {
+      ##atac is on left side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end>chic_end & atac_start<chic_end & atac_start>chic_start){
+      ##atac is on right side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end<chic_end & atac_start>chic_start){
+      ##atac region is within chic region
+      final_region_start <- atac_start
+      final_region_end <- atac_end
+      max_chic_atac_dist <- 0
+    }else if(atac_end>chic_end & atac_start<chic_start){
+      ##chic region is within atac region
+      final_region_start <- chic_start
+      final_region_end <- chic_end
+      max_chic_atac_dist <- 0
+    }
+    
+    final_region <- paste0(chr,"-",final_region_start,"-",final_region_end)
+    final_region_length <- final_region_end-final_region_start
+    # tmp_triplet$chic_region_start <- chic_start
+    # tmp_triplet$chic_region_end <- chic_end
+    # tmp_triplet$atac_region_start <- atac_start
+    # tmp_triplet$atac_region_end <- atac_end
+    tmp_triplet$final_region_start <- final_region_start
+    tmp_triplet$final_region_end <- final_region_end
+    tmp_triplet$final_region <- final_region
+    tmp_triplet$final_region_length <- final_region_length
+    # tmp_triplet$atac_peak_size <- tmp_triplet$atac_end-tmp_triplet$atac_start
+    # tmp_triplet$chic_size <- (tmp_triplet$chic_region_end-2500)-(tmp_triplet$chic_region_start+2500)
+    triplet_list_results[[i]] <- tmp_triplet
+  }
+  
+  triplet_list <- do.call(rbind,triplet_list_results)
+  
+  return(triplet_list)
+}
+
+create_triplet_matrix <- function(triplet_with_regions,chic_mat,rna_mat,atac_mat)
+{
+  chic_feature <- triplet_with_regions$chic_feature
+  atac_feature <- triplet_with_regions$atac_feature
+  rna_feature <- triplet_with_regions$rna_feature
+  
+  finaldf <- as.data.frame(t(rbind(chic_mat[chic_feature,],
+                           atac_mat[atac_feature,],
+                           rna_mat[rna_feature,])))
+  return(finaldf)
+}
+
+
+#---------------------------------
+#### READ IN DATA
+#---------------------------------
+
+triplet_list <- read.csv(paste0(path.in,"triplet_list_100622.txt"),sep="\t",na.strings=c("","NA"))
+triplet_list <- triplet_list[complete.cases(triplet_list),]
+
+##matrixEQTL outputs - only used to determine the common SNPs. No filtering done.
+# chic_res <- readRDS(paste0(path.in,"CHiC_cis_MatrixEQTLout.rds"))
+# rna_res <- readRDS(paste0(path.in,"RNA_cis_MatrixEQTLout.rds"))
+# atac_res <- readRDS(paste0(path.in,"ATAC_cis_MatrixEQTLout.rds"))
+
+##feature locations
+chic_locs <- read.table(paste0(path.in,"CHiC_gene_locations.csv"))
+rna_locs <- read.table(paste0(path.in,"RNA_gene_locations.csv"))
+atac_locs <- read.table(paste0(path.in,"ATAC_gene_locations.csv"))
+snp_locs<-as.data.frame(data.table::fread(paste0(path.in,"snp_chromlocations.csv")))
+
+##feature matrices - rlogtransformed
+chic_mat <- read.table(paste0(path.in,"CHiC_pseudobulk.csv"))
+rna_mat <- read.table(paste0(path.in,"RNA_pseudobulk.csv"))
+atac_mat <- read.table(paste0(path.in,"ATAC_pseudobulk.csv"))
+geno_mat <- as.data.frame(data.table::fread(paste0(path.in,"genotype_012mat.txt")))
+rownames(geno_mat) <- geno_mat$SNP
+geno_mat$SNP <- "NULL"
+colnames(geno_mat) <- gsub("-",".",colnames(geno_mat))
+
+message("defining regions...")
+triplet_list <- create_regions(triplet_list=triplet_list,chic_loc=chic_locs,
+                               rna_loc=rna_locs,atac_loc=atac_locs,cisdist=5e3)
+
+##make sure colnames are matching
+cols <- intersect(colnames(chic_mat),colnames(rna_mat))
+cols2 <- intersect(colnames(geno_mat),colnames(atac_mat))
+cols <- intersect(cols,cols2)
+atac_mat <- atac_mat[,cols]
+rna_mat <- rna_mat[,cols]
+geno_mat <- geno_mat[,cols]
+chic_mat <- chic_mat[,cols]
+
+##this list of SNPs from Helen to make sure we dont include anything we shouldnt
+final_snps <- readRDS(paste0(path.in,"2022-07-06_final_snp_list.rds"))
+
+##there are NAs in the triplet_list
+triplet_matrix_list <- list()
+geno_matrix_list <- list()
+
+
+#######################
+# R2GUESS: Restarting #
+#######################
+
+fn <- Sys.glob(file.path(path.out, "Stats_triplet.txt"))
+
+if (any(file.exists(fn)))
+{
+  input_name <- paste0(path.out, "Stats_triplet.txt")
+  stats_triplet <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE)
+  
+  fn <- Sys.glob(file.path(path.out, "*output_log_cond_post_prob_history.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    log_cond_post_prob <- read.table(fn, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+    
+    if (nrow(log_cond_post_prob) != 0)
+    {
+      startm1 <- max(stats_triplet[, 1], na.rm = TRUE)
+      start <- startm1 + 1
+    } else {  
+      startm1 <- as.numeric(strsplit(strsplit(fn, "//")[[1]][2], "_")[[1]][1])
+      start <- startm1 + 1 
+      p_stats_triplet <- ncol(stats_triplet)
+      stats_triplet <- rbind(stats_triplet, c(startm1, rep(NA, p_stats_triplet - 1))) 
+      
+      
+##################
+# Deleting files #
+##################
+      
+      fn <- Sys.glob(file.path(path.out, paste0(startm1, "*.*")))
+      
+      if (any(file.exists(fn)))
+      {
+        file.remove(fn)
+      }
+    
+    }
+  
+  } else {
+    startm1 <- max(stats_triplet[, 1], na.rm = TRUE)
+    start <- startm1 + 1
+  }
+} else {
+  stats_triplet <- NULL
+  startm1 <- NULL
+  start <- 1
+}
+
+
+############
+# Printing #
+############
+
+print(c("Starting sequence:", start))
+print(c("Erasing triplets:", startm1))
+
+time_loading_cum <- 0
+time_running_cum <- 0
+
+for(i in 1:nrow(triplet_list))
+{
+  start_time <- Sys.time()
+  triplet <- triplet_list[i,]
+  triplet_matrix_list[[i]] <- create_triplet_matrix(triplet=triplet,chic_mat=chic_mat,
+                                                    rna_mat=rna_mat,atac_mat=atac_mat)
+  snps <- get_snps(triplet_with_regions=triplet,snp_locs=snp_locs)
+  
+  ##making sure they match Helens filtered list of SNPs
+  snps <- snps[snps %in% final_snps]
+  
+  geno_matrix_list[[i]]<-geno_mat[snps,]
+  end_time <- Sys.time()
+  time_loading <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+  time_loading_cum <- time_loading + time_loading_cum
+  time_loading_pred <- time_loading_cum / i * nrow(triplet_list) / 60
+  
+  start_time <- Sys.time()
+  
+  
+#################
+# R2GUESS: Data #
+#################
+  
+  data.Y <- data.frame(triplet_matrix_list[[i]])[, -3]   # ***
+  label.Y <- colnames(data.Y)
+  n_data.Y <- nrow(data.Y)
+  p_data.Y <- ncol(data.Y)
+  cor_data.Y <- cor(data.Y)
+  which <- which.max(abs(cor_data.Y[lower.tri(cor_data.Y)]))
+  max_cor_data.Y <- cor_data.Y[lower.tri(cor_data.Y)][which]
+  data.X <- t(geno_matrix_list[[i]])
+  label.X <- colnames(data.X)
+  data.X <- data.frame(data.X)
+  n_data.X <- nrow(data.X)
+  p_data.X <- ncol(data.X)
+  p_data.X_OLD <- p_data.X
+  
+  while (p_data.X <= 2)
+  {
+    data.X <- cbind(data.X, data.X[, 1])
+    label.X <- colnames(data.X)
+    data.X <- data.frame(data.X)
+    n_data.X <- nrow(data.X)
+    p_data.X <- ncol(data.X)
+    p_data.X_OLD <- paste0(ncol(data.X), "*")
+  }
+  
+  cor_data.X <- cor(data.X)
+  which <- which.max(abs(cor_data.X[lower.tri(cor_data.X)]))
+  max_cor_data.X <- cor_data.X[lower.tri(cor_data.X)][which]
+  
+  MAP.file <- matrix(NA, p_data.X, 3)
+  colnames(MAP.file) <- c("SNPName", "Chr", "Posn")
+  MAP.file[, 1] <- label.X
+  MAP.file[, 2] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4)]
+  MAP.file[, 3] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4) + 1]
+  MAP.file <- NULL   # ***
+  
+  file.par <- "Par_file.xml"
+  file.log = paste("file.log", i, sep = "_")
+  root.file.output <- paste(i, "CHiC_ATAC_RNA", sep = "_")
+  top <- p_data.X * 2
+  
+  
+############
+# Printing #
+############
+  
+  print(root.file.output)
+  print(paste(label.Y, collapse = "/"))
+  
+  print(p_data.X)
+  # print(cor_data.Y)
+  # print(cor_data.X)
+  
+  
+####################
+# R2GUESS: Running #
+####################
+  
+  R2GUESS_out <- R2GUESS(dataY = data.Y, dataX = data.X, choice.Y = (1 : p_data.Y), 
+                         label.Y = label.Y, label.X = label.X, MAP.file = MAP.file, 
+                         file.par = file.par, file.init = NULL, file.log = file.log, root.file.output = root.file.output, 
+                         path.input = path.R2GUESS.in, path.output = path.out, path.par = path.par, path.init = NULL,
+                         nsweep = nsweep, burn.in = burnin, Egam = Egam, Sgam = Sgam, nb.chain = nchain, 
+                         top = top, history = TRUE, time = FALSE,
+                         conf = NULL, cuda = FALSE)
+  
+  
+  end_time <- Sys.time()
+  time_running <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+  time_running_cum <- time_running + time_running_cum
+  time_running_pred <- time_running_cum / i * nrow(triplet_list) / 60
+  
+  
+###########
+# Loading #
+###########
+  
+  load(paste0(path.out, paste(root.file.output, "output_best_visited_models.RData", sep = "_")))
+  
+  marg_prob_incl <- read.table(paste0(path.out, paste(root.file.output, "output_marg_prob_incl.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+  marg_prob_incl_mc <- read.table(paste0(path.out, paste(root.file.output, "output_marg_prob_incl_mc.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+  marg_prob_incl[, 1] <- label.X
+  marg_prob_incl_mc[, 1] <- label.X
+  
+  input_name <- paste0(path.out, paste0("file.log_", i, "_log"))
+  lines <- readLines(input_name)
+  k_idx <- grep('k = ', lines)
+  k <- as.numeric(unlist(strsplit(lines[k_idx], " = "))[2])
+  
+  input_name <- paste0(path.out, paste(root.file.output, "features.txt", sep = "_"))
+  features <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+  features <- rbind(features, c("med_RMSE", k))
+  output_name <- paste0(path.out, paste(root.file.output, "features.txt", sep = "_"))
+  write.table(features, file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  
+  
+############
+# Printing #
+############
+  
+  # print(root.file.output)
+  # print(paste(label.Y, collapse = "/"))
+  
+  print(c("Time loading:", round(c(time_loading, time_loading_pred), digits = digits)))
+  print(c("Time running:", round(c(time_running, time_running_pred), digits = digits)))
+  
+  stats_triplet <- rbind(stats_triplet, c(i, paste(label.Y, collapse = "/"), 
+                                                   p_data.X_OLD, round(c(max_cor_data.Y, max_cor_data.X), digits = digits),  
+                                                   round(c(BestModels$ModeSize[1], BestModels$postProb[1], sum(BestModels$postProb)), digits = digits), 
+                                                   round(c(max(marg_prob_incl[, 2]), max(marg_prob_incl_mc[, 2])), digits = digits)))
+  
+  colnames(stats_triplet) <- c("Triplet ID", "Triplet name", 
+                               "Numb. variants", "Max Y cor.", "Max X cor.", 
+                               "Best model size", "Best model post. prob.", "Total post. mass", 
+                               "Max mPPI", "Max mPPI MCMC")
+  
+  
+##########
+# Saving #
+##########
+  
+  output_name <- paste0(path.out, "Stats_triplet.txt")
+  write.table(stats_triplet, file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  
+  if (BestModels$ModeSize[1] != 0 | all(BestModels$ModeSize != 0))
+  {
+    
+    
+############
+# Printing #
+############
+    
+    print(root.file.output)
+    print(paste(label.Y, collapse = "/"))
+    
+    summary(R2GUESS_out, top)
+    print(marg_prob_incl)
+    print(marg_prob_incl_mc)
+  } else {
+    
+    
+##################
+# Deleting files #
+##################
+    
+    fn <- Sys.glob(file.path(path.out, paste0(i, "*.*")))
+    
+    if (any(file.exists(fn)))
+    {
+      file.remove(fn)
+    }
+  
+  }
+  
+  
+##################
+# Renaming files #
+##################
+  
+  fn <- Sys.glob(file.path(path.out, "*models_history.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.rename(fn, paste0(path.out, root.file.output, "_output_visited_models.txt"))
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*g_history.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.rename(fn, paste0(path.out, root.file.output, "_output_g.txt"))
+  }
+  
+  
+##################
+# Deleting files #
+##################
+  
+  fn <- Sys.glob(file.path(path.out, paste0("file", "*.*")))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*history.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*resume.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*command-C.*"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*.rng"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  fn <- Sys.glob(file.path(path.out, "*.*log"))
+  
+  if (any(file.exists(fn)))
+  {
+    file.remove(fn)
+  }
+  
+  rm(R2GUESS_out)
+}

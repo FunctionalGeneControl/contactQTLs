@@ -1,0 +1,854 @@
+
+rm(list = ls(all = TRUE))
+digits <- 6
+eps <- 10 ^(-5)
+
+
+#########
+# Setup #
+#########
+
+debug <- 2   # ***
+
+scale.Y <- c(TRUE, FALSE)   # ***
+scale.X <- c(FALSE, TRUE)   # ***
+
+LD_thresh <- 0.99   # ***
+FDR_level <- 0.05   # ***
+
+if (debug == 1)
+{
+  options(warn = 2, error = recover)
+} else {
+  options(warn = 1)
+  # options(warn = 0, error = NULL)
+}
+
+
+#####################
+# Setup directories #
+#####################
+
+# Working directory
+setwd("/home/lb664/")
+
+# Path directory
+path.in <- "Data/R2GUESS/"
+path.out <- "Programs/R/R2GUESS/"
+path.par <- "Programs/R/R2GUESS/Par/"
+
+
+#####################
+# Loading libraries #
+#####################
+
+library("effectsize")
+library("jmv")
+library("LaplacesDemon")
+library("MASS")
+
+
+#---------------------------------
+#### Helper functions
+#---------------------------------
+
+get_snps <- function(triplet_with_regions,snp_locs)
+{
+  chr <- triplet_with_regions$chr
+  start <- triplet_with_regions$final_region_start
+  end <- triplet_with_regions$final_region_end
+  snp_locs <- snp_locs
+  
+  tmp_snps <- snp_locs[snp_locs$chrom %in% chr,]
+  tmp_snps <- tmp_snps[tmp_snps$position>start & tmp_snps$position<end,]
+  
+  ##check that snps are also within 1Mb of RNA feature, which they all should be
+  rna_start <- triplet_with_regions$rna_start
+  rna_end <- triplet_with_regions$rna_end
+  tmp_snps$left <- abs(rna_start-tmp_snps$position)
+  tmp_snps$right <- abs(rna_end-tmp_snps$position)
+  
+  tmp_snps <- tmp_snps[tmp_snps$left<1e6 | tmp_snps$right<1e6,]
+  
+  return(tmp_snps$annot)
+}
+
+create_regions <- function(triplet_list,chic_loc,atac_loc,rna_loc,cisdist=5e3)
+{
+  triplet_list$atac_rna<-paste0(triplet_list$atac_feature,"_",triplet_list$rna_feature)
+  
+  triplet_list_results <- list()
+  cisdist <- cisdist
+  
+  for(i in 1:length(unique(triplet_list$atac_rna)))
+  {
+    ###determine region
+    tmp_triplet <- triplet_list[triplet_list$atac_rna %in% unique(triplet_list$atac_rna)[i],]
+    tmp_triplet$chr <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$chr
+    
+    #chic locations
+    tmp_triplet$chic_start <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$left
+    tmp_triplet$chic_end <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$right
+    
+    #rna locations
+    tmp_triplet$rna_start <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$left
+    tmp_triplet$rna_end <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$right
+    
+    #atac locations
+    tmp_triplet$atac_start <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$left
+    tmp_triplet$atac_end <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$right
+    
+    ##check that "start" is always smaller than "end"
+    all(tmp_triplet$chic_start<tmp_triplet$chic_end)
+    
+    ##create region
+    chic_start <- min(tmp_triplet$chic_start)-cisdist
+    chic_end <- max(tmp_triplet$chic_end)+cisdist
+    chr <- tmp_triplet$chr[1]
+    
+    ##now create atac ranges
+    atac_start <- tmp_triplet$atac_start[1]-cisdist
+    atac_end <- tmp_triplet$atac_end[1]+cisdist
+    
+    ##define intersected region
+    if(atac_end>chic_start & atac_start<chic_start & atac_end<chic_end)
+    {
+      ##atac is on left side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end>chic_end & atac_start<chic_end & atac_start>chic_start){
+      ##atac is on right side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end<chic_end & atac_start>chic_start){
+      ##atac region is within chic region
+      final_region_start <- atac_start
+      final_region_end <- atac_end
+      max_chic_atac_dist <- 0
+    }else if(atac_end>chic_end & atac_start<chic_start){
+      ##chic region is within atac region
+      final_region_start <- chic_start
+      final_region_end <- chic_end
+      max_chic_atac_dist <- 0
+    }
+    
+    final_region <- paste0(chr,"-",final_region_start,"-",final_region_end)
+    final_region_length <- final_region_end-final_region_start
+    # tmp_triplet$chic_region_start <- chic_start
+    # tmp_triplet$chic_region_end <- chic_end
+    # tmp_triplet$atac_region_start <- atac_start
+    # tmp_triplet$atac_region_end <- atac_end
+    tmp_triplet$final_region_start <- final_region_start
+    tmp_triplet$final_region_end <- final_region_end
+    tmp_triplet$final_region <- final_region
+    tmp_triplet$final_region_length <- final_region_length
+    # tmp_triplet$atac_peak_size <- tmp_triplet$atac_end-tmp_triplet$atac_start
+    # tmp_triplet$chic_size <- (tmp_triplet$chic_region_end-2500)-(tmp_triplet$chic_region_start+2500)
+    triplet_list_results[[i]] <- tmp_triplet
+  }
+  
+  triplet_list <- do.call(rbind,triplet_list_results)
+  
+  return(triplet_list)
+}
+
+create_triplet_matrix <- function(triplet_with_regions,chic_mat,rna_mat,atac_mat)
+{
+  chic_feature <- triplet_with_regions$chic_feature
+  atac_feature <- triplet_with_regions$atac_feature
+  rna_feature <- triplet_with_regions$rna_feature
+  
+  finaldf <- as.data.frame(t(rbind(chic_mat[chic_feature,],
+                           atac_mat[atac_feature,],
+                           rna_mat[rna_feature,])))
+  return(finaldf)
+}
+
+
+#---------------------------------
+#### READ IN DATA
+#---------------------------------
+
+triplet_list <- read.csv(paste0(path.in,"triplet_list_100622.txt"),sep="\t",na.strings=c("","NA"))
+triplet_list <- triplet_list[complete.cases(triplet_list),]
+
+##matrixEQTL outputs - only used to determine the common SNPs. No filtering done.
+# chic_res <- readRDS(paste0(path.in,"CHiC_cis_MatrixEQTLout.rds"))
+# rna_res <- readRDS(paste0(path.in,"RNA_cis_MatrixEQTLout.rds"))
+# atac_res <- readRDS(paste0(path.in,"ATAC_cis_MatrixEQTLout.rds"))
+
+##feature locations
+chic_locs <- read.table(paste0(path.in,"CHiC_gene_locations.csv"))
+rna_locs <- read.table(paste0(path.in,"RNA_gene_locations.csv"))
+atac_locs <- read.table(paste0(path.in,"ATAC_gene_locations.csv"))
+snp_locs<-as.data.frame(data.table::fread(paste0(path.in,"snp_chromlocations.csv")))
+
+##feature matrices - rlogtransformed
+chic_mat <- read.table(paste0(path.in,"CHiC_pseudobulk.csv"))
+rna_mat <- read.table(paste0(path.in,"RNA_pseudobulk.csv"))
+atac_mat <- read.table(paste0(path.in,"ATAC_pseudobulk.csv"))
+geno_mat <- as.data.frame(data.table::fread(paste0(path.in,"genotype_012mat.txt")))
+rownames(geno_mat) <- geno_mat$SNP
+geno_mat$SNP <- "NULL"
+colnames(geno_mat) <- gsub("-",".",colnames(geno_mat))
+
+message("defining regions...")
+triplet_list <- create_regions(triplet_list=triplet_list,chic_loc=chic_locs,
+                               rna_loc=rna_locs,atac_loc=atac_locs,cisdist=5e3)
+
+##make sure colnames are matching
+cols <- intersect(colnames(chic_mat),colnames(rna_mat))
+cols2 <- intersect(colnames(geno_mat),colnames(atac_mat))
+cols <- intersect(cols,cols2)
+atac_mat <- atac_mat[,cols]
+rna_mat <- rna_mat[,cols]
+geno_mat <- geno_mat[,cols]
+chic_mat <- chic_mat[,cols]
+
+##this list of SNPs from Helen to make sure we dont include anything we shouldnt
+final_snps <- readRDS(paste0(path.in,"2022-07-06_final_snp_list.rds"))
+
+##there are NAs in the triplet_list
+triplet_matrix_list <- list()
+geno_matrix_list <- list()
+
+for (chunk in 1 : 9)
+{
+  start <- 1 + 1000 * (chunk - 1)
+  finish <- 1000 * chunk
+  path.out <- paste0("Programs/R/R2GUESS/Output_Triplet/Output_", finish, "/")   # ***
+  
+  
+###########
+# Loading #
+###########
+  
+  input_name <- paste0(path.out, "Stats_triplet.txt")
+  stats_triplet <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+  n_stats_triplet <- nrow(stats_triplet)
+  p_stats_triplet <- ncol(stats_triplet)
+  idx_triplet <- which(stats_triplet[, 6] > 0)
+  n_idx_triplet <- length(idx_triplet)
+  col_names_stats_triplet <- colnames(stats_triplet)
+  PP_stats_triplet <- cbind(stats_triplet, matrix("", n_stats_triplet, 29))
+  colnames(PP_stats_triplet) <- c(col_names_stats_triplet, "Post-proc. total post. mass",                 # 11
+                                                           "Post-proc. best model SNP",                   # 12
+                                                           "Post-proc. best model size",                  # 13
+                                                           "Post-proc. best model post. prob.",           # 14
+                                                           "Post-proc. best model post. E(Beta|Y)",       # 15 ***
+                                                           "Post-proc. best model post. SE(Beta|Y)",      # 16 ***
+                                                           "Post-proc. max mPPI SNP",                     # 17
+                                                           "Post-proc. max mPPI",                         # 18
+                                                           "Post-proc. max mPPI post. E(Beta|Y)",         # 19 ***
+                                                           "Post-proc. max mPPI post. SE(Beta|Y)",        # 20 ***
+                                                           "Post-proc. max mPPI MCMC SNP",                # 21
+                                                           "Post-proc. max mPPI MCMC",                    # 22
+                                                           "Post-proc. max mPPI MCMC post. E(Beta|Y)",    # 23 ***
+                                                           "Post-proc. max mPPI MCMC post. SE(Beta|Y)",   # 24 ***
+                                                           "Post-proc. FDR mPPI SNP",                     # 25
+                                                           "Post-proc. FDR mPPI",                         # 26
+                                                           "Post-proc. FDR mPPI post. E(Beta|Y)",         # 27 ***
+                                                           "Post-proc. FDR mPPI post. SE(Beta|Y)",        # 28 ***
+                                                           "P-value FDR mPPI XonY",                       # 29
+                                                           "P-value FDR mPPI ANOVA",                      # 30
+                                                           "P-value FDR mPPI MANOVA",                     # 31
+                                                           "Eta2 FDR mPPI MANOVA",                        # 32
+                                                           "CI Eta2 FDR mPPI MANOVA",                     # 33
+                                                           "Pvalue FDR mPPI ANOVAStar",                   # 34
+                                                           "Pvalue FDR mPPI MANOVAStar",                  # 35
+                                                           "Post-proc. FDR mPPI MCMC SNP",                # 36   29
+                                                           "Post-proc. FDR mPPI MCMC",                    # 37   30
+                                                           "Post-proc. FDR mPPI MCMC post. E(Beta|Y)",    # 38   31 ***
+                                                           "Post-proc. FDR mPPI MCMC post. SE(Beta|Y)")   # 39   32 ***
+
+
+
+                                
+  
+  time_loading_cum <- 0
+  time_PP_cum <- 0
+  time_Pvalue_cum <- 0
+  
+  for (i in (idx_triplet + start - 1))
+  {
+    start_time <- Sys.time()
+    triplet <- triplet_list[i,]
+    triplet_matrix_list[[i]] <- create_triplet_matrix(triplet=triplet,chic_mat=chic_mat,
+                                                      rna_mat=rna_mat,atac_mat=atac_mat)
+    snps <- get_snps(triplet_with_regions=triplet,snp_locs=snp_locs)
+    
+    ##making sure they match Helens filtered list of SNPs
+    snps <- snps[snps %in% final_snps]
+    
+    geno_matrix_list[[i]]<-geno_mat[snps,]
+    end_time <- Sys.time()
+    time_loading <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+    time_loading_cum <- time_loading + time_loading_cum
+    time_loading_pred <- time_loading_cum / (i - start + 1) * (length(idx_triplet)) / 60
+    
+    
+#################
+# R2GUESS: Data #
+#################
+    
+    start_time <- Sys.time()
+    data.Y <- data.frame(triplet_matrix_list[[i]])
+    label.Y <- colnames(data.Y)
+    n_data.Y <- nrow(data.Y)
+    p_data.Y <- ncol(data.Y)
+    cor_data.Y <- cor(data.Y)
+    which <- which.max(abs(cor_data.Y[lower.tri(cor_data.Y)]))
+    max_cor_data.Y <- cor_data.Y[lower.tri(cor_data.Y)][which]
+    data.X <- t(geno_matrix_list[[i]])
+    label.X <- colnames(data.X)
+    data.X <- data.frame(data.X)
+    n_data.X <- nrow(data.X)
+    p_data.X <- ncol(data.X)
+    p_data.X_OLD <- p_data.X
+    
+    if (p_data.X == 0)
+    {
+      p_data.X <- 3
+      data.X <- matrix(rbinom(n_data.X * p_data.X, 3, 0.05), n_data.X, p_data.X)
+      label.X <- rep("***", p_data.X)
+      data.X <- data.frame(data.X)
+      n_data.X <- nrow(data.X)
+      p_data.X <- ncol(data.X)
+      p_data.X_OLD <- paste0(ncol(data.X), "*")
+    } else {
+      
+      while (p_data.X <= 2)
+      {
+        data.X <- cbind(data.X, data.X[, 1])
+        label.X <- c(label.X, label.X[1])
+        data.X <- data.frame(data.X)
+        n_data.X <- nrow(data.X)
+        p_data.X <- ncol(data.X)
+        p_data.X_OLD <- paste0(ncol(data.X), "*")
+      }
+    
+    }
+    
+    cor_data.X <- cor(data.X)
+    which <- which.max(abs(cor_data.X[lower.tri(cor_data.X)]))
+    max_cor_data.X <- cor_data.X[lower.tri(cor_data.X)][which]
+    
+    MAP.file <- matrix(NA, p_data.X, 3)
+    colnames(MAP.file) <- c("SNPName", "Chr", "Posn")
+    MAP.file[, 1] <- label.X
+    MAP.file[, 2] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4)]
+    MAP.file[, 3] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4) + 1]
+    MAP.file <- NULL   # ***
+    
+    file.par <- "Par_file.xml"
+    file.log = paste("file.log", i, sep = "_")
+    root.file.output <- paste(i, "CHiC_ATAC_RNA", sep = "_")
+    top <- p_data.X * 2
+    
+    
+############
+# Printing #
+############
+    
+    print(root.file.output)
+    print(paste(label.Y, collapse = "/"))
+    
+    if (debug == 1)
+    {
+      print(p_data.X)
+      # print(round(cor_data.Y, digits = digits))
+      # print(round(cor_data.X, digits = digits))
+    }
+    
+    
+###########
+# Loading #
+###########
+    
+    load(paste0(path.out, paste(root.file.output, "output_best_visited_models.RData", sep = "_")))
+    
+    p_visited_models <- max(count.fields(paste0(path.out, paste(root.file.output, "output_visited_models.txt", sep = "_")), sep = ""))
+    visited_models <- read.table(paste0(path.out, paste(root.file.output, "output_visited_models.txt", sep = "_")), header = FALSE, skip = 1, col.names = paste0("V", seq_len(p_visited_models)), sep = "", stringsAsFactors = FALSE, fill = TRUE)
+    n_visited_models <- nrow(visited_models)
+    p_visited_models <- ncol(visited_models)
+    max_visited_models <- p_visited_models - 4   # ***
+    colnames(visited_models) <- c(c("Sweep", "ModelSize", "logMarg", "logCondPost"), paste0("modelName", "SNP", seq(1, max_visited_models, 1)))
+    p_best_visited_models <- max(count.fields(paste0(path.out, paste(root.file.output, "output_best_visited_models.txt", sep = "_")), sep = ""))
+    best_visited_models <- read.table(paste0(path.out, paste(root.file.output, "output_best_visited_models.txt", sep = "_")), header = FALSE, skip = 1, col.names = paste0("V", seq_len(p_best_visited_models)), sep = "", stringsAsFactors = FALSE, fill = TRUE)    
+    n_best_visited_models <- nrow(best_visited_models)
+    p_best_visited_models <- ncol(best_visited_models)
+    max_best_visited_models <- max(best_visited_models[, 5])
+    colnames(best_visited_models) <- c(names(BestModels)[-9], paste0("modelName", "SNP", seq(1, max_best_visited_models, 1)))
+    
+    marg_prob_incl <- read.table(paste0(path.out, paste(root.file.output, "output_marg_prob_incl.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+    marg_prob_incl_mc <- read.table(paste0(path.out, paste(root.file.output, "output_marg_prob_incl_mc.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+    marg_prob_incl[, 1] <- label.X
+    marg_prob_incl_mc[, 1] <- label.X
+    marg_prob_incl <- marg_prob_incl[sort(marg_prob_incl[, 1], index.return = TRUE)$ix, ]
+    marg_prob_incl_mc <- marg_prob_incl_mc[sort(marg_prob_incl_mc[, 1], index.return = TRUE)$ix, ]
+    
+    post_g <- read.table(paste0(path.out, paste(root.file.output, "output_g.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+    features <- read.table(paste0(path.out, paste(root.file.output, "features.txt", sep = "_")), header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+    
+    
+############
+# Printing #
+############
+    
+    if (debug == 1)
+    {
+      best_visited_models_print <- best_visited_models
+      
+      marg_prob_incl_print <- data.frame(cbind(marg_prob_incl[, 1], round(marg_prob_incl[, 2], digits = digits)))
+      marg_prob_incl_mc_print <- data.frame(cbind(marg_prob_incl_mc[, 1], round(marg_prob_incl_mc[, 2], digits = digits)))
+      colnames(marg_prob_incl_print) <- colnames(marg_prob_incl)
+      colnames(marg_prob_incl_mc_print) <- colnames(marg_prob_incl_mc)
+      
+      print(best_visited_models)
+      print(marg_prob_incl_print)
+      print(marg_prob_incl_mc_print)
+    }
+    
+    
+###########
+# Tagging #
+###########
+    
+    rownames(cor_data.X) <- NULL
+    colnames(cor_data.X) <- NULL
+    tagging <- NULL
+    tagged <- NULL
+    
+    for (s in 1 : p_data.X)
+    {
+      ms <- sort(unique(c(unlist(tagging), unlist(tagged))))
+      idx_tagged <- which(abs(cor_data.X[s, ]) >= LD_thresh)
+      idx_tagged <- sort(setdiff(idx_tagged, ms))
+      
+      if (length(idx_tagged) > 0)
+      {
+        tagging <- c(tagging, s)
+        tagged[[s]] <- idx_tagged
+      } else {
+        tagged[[s]] <- NULL
+      }
+      
+      rm(ms)
+      rm(idx_tagged)
+    }
+    
+    ms <- sort(unique(c(unlist(tagging), unlist(tagged))))
+    n_tagging <- length(tagging)
+    n_tagged <- length(tagged)
+    
+    
+######################
+# Reordering Tagging #
+######################
+    
+    tagging <- NULL
+    tagged_group <- NULL
+    
+    for (t in 1 : n_tagged)
+    {
+      idx <- sort(marg_prob_incl[tagged[[t]], 2], decreasing = TRUE, index.return = TRUE)$ix
+      
+      if (length(idx) > 0)
+      {
+        tagged[[t]] <- tagged[[t]][idx]
+        tagged_group <- c(tagged_group, t)
+        tagging <- c(tagging, tagged[[t]][1])
+      }
+    
+    }
+    
+    rm(idx)
+    
+    ms <- sort(unique(c(unlist(tagging), unlist(tagged))))
+    n_tagging <- length(tagging)
+    n_tagged <- length(tagged)
+    
+    
+###############################################
+# Post-processing model posterior probability #
+###############################################
+    
+    PP_best_visited_models <- best_visited_models
+    PP_best_visited_models_list <- NULL
+    
+    for (m in 1 : n_best_visited_models)
+    {
+      model <- as.numeric(na.omit(as.numeric(best_visited_models[m, 9 : p_best_visited_models])))
+      model_tagging <- intersect(model, tagging)
+      model_tagged <- setdiff(model, tagging)
+      
+      if (length(model_tagged) > 0)
+      {
+        
+        for (t in 1 : n_tagging)
+        {
+          int <- intersect(model_tagged, tagged[[tagged_group[t]]])
+          
+          if (length(int) > 0)
+          {
+            idx <- match(int, model)
+            model[idx] <- tagging[t]
+            model <- unique(model)
+          }
+        
+        }
+      
+      }
+      
+      model <- sort(unique(model))
+      p_model <- length(model)
+      PP_best_visited_models[m, 5] <- p_model
+      PP_best_visited_models[m, 9 : p_best_visited_models] <- NA
+      
+      if (p_model > 0)
+      {
+        PP_best_visited_models[m, 9 : (9 + p_model - 1)] <- label.X[model]
+        PP_best_visited_models_list <- c(PP_best_visited_models_list, paste(label.X[model], collapse = ","))
+      } else {
+        PP_best_visited_models_list <- c(PP_best_visited_models_list, "NULL")
+      }
+    
+    }
+    
+    PP_best_visited_models_TMP <- PP_best_visited_models
+    u_mododels <- unique(PP_best_visited_models_list)
+    n_u_models <- length(u_mododels)
+    idx_u_models <- match(u_mododels, PP_best_visited_models_list)
+    PP_best_visited_models <- PP_best_visited_models[idx_u_models, ]
+    
+    for (m in 1 : n_u_models)
+    {
+      PP_best_visited_models[m, 2] <- sum(PP_best_visited_models_TMP[PP_best_visited_models_list == u_mododels[m], 2])
+      PP_best_visited_models[m, 7] <- sum(PP_best_visited_models_TMP[PP_best_visited_models_list == u_mododels[m], 7])
+    }
+    
+    
+#####################
+# Reordering Models #
+#####################
+    
+    idx <- sort(PP_best_visited_models[, 7], decreasing = TRUE, index.return = TRUE)$ix
+    PP_best_visited_models <- PP_best_visited_models[idx, ]
+    rm(idx)
+    
+    
+############
+# Checking #
+############
+    
+    if (debug == 1)
+    {
+      
+      if (sum(best_visited_models[, 2]) != sum(PP_best_visited_models[, 2]))
+      {
+        print(root.file.output)
+        print(paste(label.Y, collapse = "/"))
+        stop("Overall number of visited models does not match")
+      }
+      
+      if (sum(best_visited_models[, 7]) - sum(PP_best_visited_models[, 7]) > 0.01)
+      {
+        print(root.file.output)
+        print(paste(label.Y, collapse = "/"))
+        stop("Posterior mass does not match")
+      }
+    
+    }
+    
+    
+############
+# Printing #
+############
+    
+    if (debug == 1)
+    {
+      PP_best_visited_models_print <- PP_best_visited_models[, -c(4, 8)]
+      print(PP_best_visited_models_print)
+    }
+    
+    
+############################################################
+# Post-processing marginal posterior probability inclusion #
+############################################################
+    
+    PP_marg_prob_incl <- data.frame(matrix(NA, n_tagging, 2))
+    PP_marg_prob_incl_mc <- data.frame(matrix(NA, n_tagging, 2))
+    colnames(PP_marg_prob_incl) <- colnames(marg_prob_incl)
+    colnames(PP_marg_prob_incl_mc) <- colnames(marg_prob_incl_mc)
+    
+    for (t in 1 : n_tagging)
+    {
+       PP_marg_prob_incl[t, 1] <- marg_prob_incl[tagging[t], 1]
+       PP_marg_prob_incl[t, 2] <- min(1, sum(marg_prob_incl[unique(c(tagging[t], tagged[[tagged_group[t]]])), 2]))
+       
+       PP_marg_prob_incl_mc[t, 1] <- marg_prob_incl_mc[tagging[t], 1]
+       PP_marg_prob_incl_mc[t, 2] <- min(1, sum(marg_prob_incl_mc[unique(c(tagging[t], tagged[[tagged_group[t]]])), 2]))
+    }
+    
+    
+############
+# Printing #
+############
+    
+    if (debug == 1)
+    {
+      PP_marg_prob_incl_print <- data.frame(cbind(PP_marg_prob_incl[, 1], round(PP_marg_prob_incl[, 2], digits = digits)))
+      PP_marg_prob_incl_mc_print <- data.frame(cbind(PP_marg_prob_incl_mc[, 1], round(PP_marg_prob_incl_mc[, 2], digits = digits)))
+      colnames(PP_marg_prob_incl_print) <- colnames(PP_marg_prob_incl)
+      colnames(PP_marg_prob_incl_mc_print) <- colnames(PP_marg_prob_incl_mc)
+      
+      print(PP_marg_prob_incl_print)
+      print(PP_marg_prob_incl_mc_print)
+    }
+    
+    end_time <- Sys.time()
+    time_PP <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+    time_PP_cum <- time_PP + time_PP_cum
+    time_PP_pred <- time_PP_cum / (i - start + 1) * (length(idx_triplet)) / 60
+    
+    
+################################################################
+# Post-processing FDR marginal posterior probability inclusion #
+################################################################
+    
+    s_PP_marg_prob_incl <- sort(PP_marg_prob_incl[, 2], decreasing = TRUE, index.return = TRUE)
+    cumsum_s_PP_marg_prob_incl <- cumsum(1 - s_PP_marg_prob_incl$x)
+    any_FDR_cumsum_PP_marg_prob_incl <- cumsum_s_PP_marg_prob_incl < FDR_level
+    
+    if (sum(any_FDR_cumsum_PP_marg_prob_incl) > 0)
+    {
+       FDR_s_PP_marg_prob_incl_idx <- s_PP_marg_prob_incl$ix[which(cumsum_s_PP_marg_prob_incl < FDR_level)]
+    }
+    
+    s_PP_marg_prob_incl_mc <- sort(PP_marg_prob_incl_mc[, 2], decreasing = TRUE, index.return = TRUE)
+    cumsum_s_PP_marg_prob_incl_mc <- cumsum(1 - s_PP_marg_prob_incl_mc$x)
+    any_FDR_cumsum_PP_marg_prob_incl_mc <- cumsum_s_PP_marg_prob_incl_mc < FDR_level
+    
+    if (sum(any_FDR_cumsum_PP_marg_prob_incl_mc) > 0)
+    {
+       FDR_s_PP_marg_prob_incl_mc_idx <- s_PP_marg_prob_incl_mc$ix[which(cumsum_s_PP_marg_prob_incl_mc < FDR_level)]
+    }
+    
+    
+##########################
+# Post-processing Pvalue #
+##########################
+    
+    Pvalue_XonY <- NULL
+    Pvalue_ANOVA <- NULL
+    Pvalue_MANOVA <- NULL
+    Coeff_MANOVA <- NULL
+    Eta2_MANOVA <- NULL
+    Pvalue_ANOVAStar <- NULL
+    Pvalue_MANOVAStar <- NULL
+    
+    if (sum(any_FDR_cumsum_PP_marg_prob_incl) > 0)
+    {
+      start_time <- Sys.time()
+      Y <- data.matrix(data.Y)
+      X <- data.matrix(data.X)
+      
+      n_Y <- nrow(Y)
+      p_Y <- ncol(Y)
+      n_X <- nrow(X)
+      p_X <- ncol(X)
+      
+      Y <- scale(data.matrix(data.Y), center = scale.Y[1], scale = scale.Y[2])
+      
+      idx <- tagging[FDR_s_PP_marg_prob_incl_idx][sort(PP_marg_prob_incl[FDR_s_PP_marg_prob_incl_idx, 2], index.return = TRUE)$ix]
+      X_XonY <- factor(X[, max(idx)])
+      X_ANOVA <- X[, max(idx)]
+      X_MANCOVA <- X[, idx]
+      
+      if (length(unique(X_XonY)) == 2)
+      {
+        tryCatch({
+          fit <- glm(X_XonY ~ Y, family = binomial(link = "logit"))
+          ctable <- coef(summary(fit))
+          Pvalue_XonY <- ctable[-1, "Pr(>|z|)"]
+        }, error = function(e){})
+      } else {
+        tryCatch({
+          fit <- polr(X_XonY ~ Y, Hess = TRUE)
+          ctable <- coef(summary(fit))
+          p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+          ctable <- cbind(ctable, "p value" = p)
+          Pvalue_XonY <- ctable[c(1 : 3), "p value"]
+        }, error = function(e){})
+      }
+      
+      tryCatch({
+        fit <- manova(Y ~ 0 + X_ANOVA)
+        Pvalue_MANOVA <- summary(fit)$stats["X_ANOVA", "Pr(>F)"]
+        Coef_MANOVA <- coef(fit)
+        Eta2_MANOVA <- effectsize(fit)
+      }, error = function(e){})
+            
+      tryCatch({
+        fit <- summary.aov(fit)
+        Pvalue_ANOVA <- rep(NA, ncol(Y))     
+        for (kk in 1 : ncol(Y))
+        {
+          Pvalue_ANOVA[kk] <- fit[[kk]]["X_ANOVA", "Pr(>F)"]
+        }
+      }, error = function(e){})
+      
+      data_TMP <- data.frame(Y, X_MANCOVA)
+      if (!is.null(ncol(X_MANCOVA)))
+      {
+        colnames(data_TMP) <- c(paste0("Y", seq(1, ncol(Y))), paste0("X", seq(1, ncol(X_MANCOVA))))
+        tryCatch({
+          fit <- mancova(data = data_TMP, 
+                         deps = paste0("Y", seq(1, ncol(Y))), 
+                         factors = paste0("X", length(idx)), 
+                         covs = paste0("X", seq(1, length(idx) - 1)))
+          Pvalue_MANOVAStar <- min(fit$multivar$asDF[1, 14], fit$multivar$asDF[2, 14])
+          Pvalue_ANOVAStar <- c(fit$univar$asDF[seq(1, ncol(Y), 1), 7])
+        }, error = function(e){})
+      } else {
+        colnames(data_TMP) <- c(paste0("Y", seq(1, ncol(Y))), "X")
+        tryCatch({
+            fit <- mancova(data = data_TMP, 
+            deps = paste0("Y", seq(1, ncol(Y))), 
+            factors = "X")
+            Pvalue_MANOVAStar <- fit$multivar$asDF[1, 14]
+            Pvalue_ANOVAStar <- c(fit$univar$asDF[seq(ncol(Y) * (length(idx) - 1) + 1, ncol(Y) * (length(idx) - 1) + ncol(Y)), 7])
+        }, error = function(e){})
+      }      
+      
+      end_time <- Sys.time()
+      time_Pvalue <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+      time_Pvalue_cum <- time_Pvalue + time_Pvalue_cum
+      time_Pvalue_pred <- time_Pvalue_cum / (i - start + 1) * (length(idx_triplet)) / 60
+      
+      
+############
+# Printing #
+############
+      
+      if (debug == 1)
+      {
+        Pvalue_XonY_print <- round(Pvalue_XonY, digits)
+        Pvalue_ANOVA_print <- round(Pvalue_ANOVA, digits)
+        Pvalue_MANOVA_print <- round(Pvalue_MANOVA, digits)
+        Coef_MANOVA_print <- round(Coef_MANOVA, digits)
+        Eta2_MANOVA_print <- Eta2_MANOVA
+        Pvalue_MANOVA_print <- round(Pvalue_MANOVA, digits)
+        Pvalue_ANOVAStar_print <- round(Pvalue_ANOVAStar, digits)
+        Pvalue_MANOVAStar_print <- round(Pvalue_MANOVAStar, digits)
+        
+        print(Pvalue_XonY_print)
+        print(Pvalue_ANOVA_print)
+        print(Pvalue_MANOVA_print)
+        print(Coef_MANOVA_print)
+        print(Eta2_MANOVA_print)
+        
+        print(Pvalue_ANOVAStar_print)
+        print(Pvalue_MANOVAStar_print)
+      }
+    
+    }
+    
+    
+###########
+# Storing #
+###########
+    
+    PP_stats_triplet[i - start + 1, 11] <- round(sum(PP_best_visited_models[, 7]), digits)
+    PP_stats_triplet[i - start + 1, 12] <- paste(PP_best_visited_models[1, 9 : p_best_visited_models][!is.na(PP_best_visited_models[1, 9 : p_best_visited_models])], collapse = ",")
+    PP_stats_triplet[i - start + 1, 13] <- PP_best_visited_models[1, 5]
+    PP_stats_triplet[i - start + 1, 14] <- round(PP_best_visited_models[1, 7], digits)
+    PP_stats_triplet[i - start + 1, 17] <- paste(PP_marg_prob_incl[, 1][PP_marg_prob_incl[, 2] == max(PP_marg_prob_incl[, 2])], collapse = ",")
+    PP_stats_triplet[i - start + 1, 18] <- round(max(PP_marg_prob_incl[, 2]), digits)
+    PP_stats_triplet[i - start + 1, 21] <- paste(PP_marg_prob_incl_mc[, 1][PP_marg_prob_incl_mc[, 2] == max(PP_marg_prob_incl_mc[, 2])], collapse = ",")
+    PP_stats_triplet[i - start + 1, 22] <- round(max(PP_marg_prob_incl_mc[, 2]), digits)
+    
+    if (sum(any_FDR_cumsum_PP_marg_prob_incl) > 0)
+    {
+      PP_stats_triplet[i - start + 1, 25] <- paste(PP_marg_prob_incl[, 1][FDR_s_PP_marg_prob_incl_idx], collapse = ",")
+      PP_stats_triplet[i - start + 1, 26] <- paste(round(PP_marg_prob_incl[, 2][FDR_s_PP_marg_prob_incl_idx], digits), collapse = ",")
+    }
+    
+    if (!is.null(Pvalue_XonY))
+    {
+      PP_stats_triplet[i - start + 1, 29] <- paste(round(Pvalue_XonY, digits), collapse = ",")
+    }
+    if (!is.null(Pvalue_ANOVA))
+    {
+      PP_stats_triplet[i - start + 1, 30] <- paste(round(Pvalue_ANOVA, digits), collapse = ",")
+    }
+    if (!is.null(Pvalue_MANOVA))
+    {
+      PP_stats_triplet[i - start + 1, 31] <- paste(round(Pvalue_MANOVA, digits), collapse = ",")
+    }
+    if (!is.null(Eta2_MANOVA))
+    {
+      PP_stats_triplet[i - start + 1, 32] <- paste(round(Eta2_MANOVA$Eta2_partial, digits), collapse = ",")
+    }
+    if (!is.null(Eta2_MANOVA))
+    {
+      PP_stats_triplet[i - start + 1, 33] <- paste(round(c(Eta2_MANOVA$CI_low, Eta2_MANOVA$CI_high), digits), collapse = ",")
+    }
+    if (!is.null(Pvalue_ANOVAStar))
+    {
+      PP_stats_triplet[i - start + 1, 34] <- paste(round(Pvalue_ANOVAStar, digits), collapse = ",")
+    }
+    if (!is.null(Pvalue_ANOVAStar))
+    {
+      PP_stats_triplet[i - start + 1, 35] <- paste(round(Pvalue_MANOVAStar, digits), collapse = ",")
+    }
+      
+    if (sum(any_FDR_cumsum_PP_marg_prob_incl_mc) > 0)
+    {
+      PP_stats_triplet[i - start + 1, 36] <- paste(PP_marg_prob_incl_mc[, 1][FDR_s_PP_marg_prob_incl_mc_idx], collapse = ",")
+      PP_stats_triplet[i - start + 1, 37] <- paste(round(PP_marg_prob_incl_mc[, 2][FDR_s_PP_marg_prob_incl_mc_idx], digits), collapse = ",")
+    }
+    
+    
+############
+# Printing #
+############
+    
+    if (debug == 2)
+    {
+      print(c("Loading:", paste0(round(time_loading, digits), "m"), paste0(round(time_loading_pred, digits), "h")))
+      print(c("Post. Proc.:", paste0(round(time_PP, digits), "m"), paste0(round(time_PP_pred, digits), "h")))
+      if (sum(any_FDR_cumsum_PP_marg_prob_incl) > 0)
+      {
+        print(c("Post. Proc. Pvalue:", paste0(round(time_Pvalue, digits), "m"), paste0(round(time_Pvalue_pred, digits), "h")))
+      }
+      print(PP_stats_triplet[i - start + 1, ])
+    }
+  
+  }
+  
+  idx_mPPI_thresh <- which(!is.na(PP_stats_triplet[, 26]))   # ***
+  PP_stats_triplet_mPPI <- PP_stats_triplet[idx_mPPI_thresh, ]
+  
+  
+############
+# Printing #
+############
+  
+  if (debug == 1)
+  {
+    PP_stats_triplet_mPPI_print <- PP_stats_triplet_mPPI
+    print(PP_stats_triplet_mPPI_print)
+  }
+  
+  
+##########
+# Saving #
+##########
+  
+  output_name <- paste0(path.out, paste(paste("PP_stats_triplet", "FDR", FDR_level, "CC", sep = "_"), "txt", sep = "."))
+  write.table(PP_stats_triplet, file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  
+  output_name <- paste0(path.out, paste(paste("PP_stats_triplet_mPPI", "FDR", FDR_level, "CC", sep = "_"), "txt", sep = "."))
+  write.table(PP_stats_triplet_mPPI, file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+}

@@ -1,3 +1,3 @@
 CHi-C reads were aligned and filtered, but not deduplicated, using HiCUP combinations
-Then reads were processed using WASP at eQTL-eGene contacts
-Total counts were generated and normalised using rlog as input to GUESS
+Then reads were processed using WASP 
+Total counts were generated at eQTL-eGene contacts

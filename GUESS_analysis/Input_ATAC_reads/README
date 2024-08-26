@@ -1,0 +1,3 @@
+ATAC-seq reads were aligned but not de-duplicated
+WASP was run to identify remove reads mapping elsewhere in a different genotype
+Aligned reads were then de-duplicated and total counts made at peaks

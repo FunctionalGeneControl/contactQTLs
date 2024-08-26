@@ -1,0 +1,282 @@
+
+rm(list = ls(all = TRUE))
+digits <- 3
+eps <- 10 ^(-5)
+
+
+#########
+# Setup #
+#########
+
+PoV <- 0.05   # ***
+CPoV <- 0.99   # ***
+
+alpha <- 0.20   # ***
+alpha_signif <- 0.05   # ***
+sims <- 500   # ***
+
+FDR_level <- 0.05   # ***
+
+
+#####################
+# Setup directories #
+#####################
+
+# Working directory
+setwd("Z:\\Documents\\Articles\\")
+
+# Path directory
+path.in <- "Data\\R2GUESS\\"
+path.in.data <- "Data\\"
+path.out <- "Programs\\R\\Mediation\\Output_Triplet\\"
+
+
+###########
+# Loading #
+###########
+
+path.in <- "Programs\\R\\Rev\\Mediation\\Output\\Triplet\\"
+
+input_name <- paste0(path.in, paste(paste("PP_stats_triplet", "alpha", alpha, sep = "_"), "txt", sep = "."))
+PP_stats_triplet <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+
+input_name <- paste0(path.in, paste(paste("PP_stats_triplet", "alpha", alpha, "FDR", FDR_level, "FINAL", sep = "_"), "txt", sep = "."))
+PP_stats_triplet_FINAL <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, check.names = FALSE)
+
+idx <- grep(",",  PP_stats_triplet[, 8])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit( PP_stats_triplet[i, 8], split = ","))))
+  
+  for (j in seq(4, 14))
+  {
+     PP_stats_triplet[i, j] <- unlist(strsplit( PP_stats_triplet[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",",  PP_stats_triplet[, 19])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit( PP_stats_triplet[i, 19], split = ","))))
+  
+  for (j in seq(15, 25))
+  {
+     PP_stats_triplet[i, j] <- unlist(strsplit( PP_stats_triplet[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",",  PP_stats_triplet[, 30])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit( PP_stats_triplet[i, 30], split = ","))))
+  
+  for (j in seq(26, 36))
+  {
+     PP_stats_triplet[i, j] <- unlist(strsplit( PP_stats_triplet[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",",  PP_stats_triplet[, 41])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit( PP_stats_triplet[i, 41], split = ","))))
+  
+  for (j in seq(37, 47))
+  {
+     PP_stats_triplet[i, j] <- unlist(strsplit( PP_stats_triplet[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",", PP_stats_triplet_FINAL[, 8])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit(PP_stats_triplet_FINAL[i, 8], split = ","))))
+  
+  for (j in seq(4, 14))
+  {
+    PP_stats_triplet_FINAL[i, j] <- unlist(strsplit(PP_stats_triplet_FINAL[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",", PP_stats_triplet_FINAL[, 19])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit(PP_stats_triplet_FINAL[i, 19], split = ","))))
+  
+  for (j in seq(15, 25))
+  {
+    PP_stats_triplet_FINAL[i, j] <- unlist(strsplit(PP_stats_triplet_FINAL[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",", PP_stats_triplet_FINAL[, 30])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit(PP_stats_triplet_FINAL[i, 30], split = ","))))
+  
+  for (j in seq(26, 36))
+  {
+    PP_stats_triplet_FINAL[i, j] <- unlist(strsplit(PP_stats_triplet_FINAL[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep(",", PP_stats_triplet_FINAL[, 41])
+
+for (i in idx)
+{
+  idx_min <- which.min(as.numeric(unlist(strsplit(PP_stats_triplet_FINAL[i, 41], split = ","))))
+  
+  for (j in seq(37, 47))
+  {
+    PP_stats_triplet_FINAL[i, j] <- unlist(strsplit(PP_stats_triplet_FINAL[i, j], split = ","))[idx_min]
+  }
+
+}
+
+idx <- grep("p.value", colnames(PP_stats_triplet))
+n_idx <- length(idx)
+Table <- matrix(NA, n_idx, n_idx)
+Table_FINAL <- matrix(NA, n_idx, n_idx)
+rownames(Table) <- colnames(PP_stats_triplet)[idx - 1]
+colnames(Table) <- colnames(PP_stats_triplet)[idx - 1]
+rownames(Table_FINAL) <- colnames(PP_stats_triplet)[idx - 1]
+colnames(Table_FINAL) <- colnames(PP_stats_triplet)[idx - 1]
+
+for (j in 1 : n_idx)
+{
+  
+  for (jj in 1 : n_idx)
+  {
+    
+    if (j != jj)
+    {
+      # print(c(j, jj))
+      
+      Table[j, jj] <- sum((as.numeric(PP_stats_triplet[, idx[j]])) & 
+                          (as.numeric(PP_stats_triplet[, idx[jj]])), na.rm = TRUE)
+      Table_FINAL[j, jj] <- sum((as.numeric(PP_stats_triplet_FINAL[, idx[j]])) & 
+                                (as.numeric(PP_stats_triplet_FINAL[, idx[jj]])), na.rm = TRUE)
+    }
+  
+  }
+
+}
+
+idx <- c(grep("TotEff", colnames(Table)))
+
+
+############
+# Printing #
+############
+
+round(Table[-idx, -idx] / nrow(PP_stats_triplet) * 100, digits)
+round(Table_FINAL[-idx, -idx] / nrow(PP_stats_triplet_FINAL) * 100, digits)
+
+
+##################
+# Cross-checking #
+##################
+
+idx <- NULL
+idx <- c(idx, grep("ENSG00000138744_NAAA", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000146540_C7orf50", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000050344_NFE2L3", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000132334_PTPRE", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000197321_SVIL", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000152315_KCNK13", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000100889_PCK2", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000137801_THBS1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("ENSG00000105619_TFPT", PP_stats_triplet_FINAL[, 2]))
+
+
+############
+# Printing #
+############
+
+print(PP_stats_triplet_FINAL[unique(idx), c(1, 2, 6, 8, 10, 13, 14, 
+                                                 17, 19, 21, 24, 25, 
+                                                 28, 30, 32, 35, 36, 
+                                                 39, 41, 43, 46, 47)])
+
+
+##################
+# Cross-checking #
+##################
+
+idx <- NULL
+idx <- c(idx, grep("2496951_ENSG00000141027_NCOR1/Peak_44138/ENSG00000141027_NCOR1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("2496953_ENSG00000141027_NCOR1/Peak_44138/ENSG00000141027_NCOR1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("2496958_ENSG00000141027_NCOR1/Peak_44138/ENSG00000141027_NCOR1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("2496998_ENSG00000141027_NCOR1/Peak_44140/ENSG00000141027_NCOR1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("2651338_ENSG00000177885_GRB2/Peak_49683/ENSG00000177885_GRB2", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("518322_ENSG00000187554_TLR5/Peak_76308/ENSG00000187554_TLR5", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("518322_ENSG00000187554_TLR5/Peak_76309/ENSG00000187554_TLR5", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("4469467_ENSG00000109743_BST1/Peak_105550/ENSG00000109743_BST1", PP_stats_triplet_FINAL[, 2]))
+idx <- c(idx, grep("4469482_ENSG00000109743_BST1/Peak_105550/ENSG00000109743_BST1", PP_stats_triplet_FINAL[, 2]))
+
+
+############
+# Printing #
+############
+
+print(PP_stats_triplet_FINAL[idx, c(1, 2, 6, 8, 10, 13, 14, 
+                                                17, 19, 21, 24, 25, 
+                                                28, 30, 32, 35, 36, 
+                                                39, 41, 43, 46, 47)])
+
+PP_stats_triplet[PP_stats_triplet[, 10] >= alpha_signif, seq(4, 14)] <- ""
+PP_stats_triplet[PP_stats_triplet[, 21] >= alpha_signif, seq(15, 25)] <- ""
+PP_stats_triplet[PP_stats_triplet[, 32] >= alpha_signif, seq(26, 36)] <- ""
+
+idx <- which(as.numeric(PP_stats_triplet[, 6]) < alpha_signif & as.numeric(PP_stats_triplet[, 10]) < alpha_signif |
+             as.numeric(PP_stats_triplet[, 17]) < alpha_signif & as.numeric(PP_stats_triplet[, 21]) < alpha_signif |
+             as.numeric(PP_stats_triplet[, 28]) < alpha_signif & as.numeric(PP_stats_triplet[, 32]) < alpha_signif)
+
+PP_stats_triplet_FINAL[PP_stats_triplet_FINAL[, 10] >= alpha_signif, seq(4, 14)] <- ""
+PP_stats_triplet_FINAL[PP_stats_triplet_FINAL[, 21] >= alpha_signif, seq(15, 25)] <- ""
+PP_stats_triplet_FINAL[PP_stats_triplet_FINAL[, 32] >= alpha_signif, seq(26, 36)] <- ""
+
+idx_FINAL <- which(as.numeric(PP_stats_triplet_FINAL[, 6]) < alpha_signif & as.numeric(PP_stats_triplet_FINAL[, 10]) < alpha_signif |
+                   as.numeric(PP_stats_triplet_FINAL[, 17]) < alpha_signif & as.numeric(PP_stats_triplet_FINAL[, 21]) < alpha_signif |
+                   as.numeric(PP_stats_triplet_FINAL[, 28]) < alpha_signif & as.numeric(PP_stats_triplet_FINAL[, 32]) < alpha_signif)
+
+
+############
+# Printing #
+############
+
+# print(PP_stats_triplet[idx, ])
+# print(PP_stats_triplet_FINAL[idx_FINAL, ])
+
+
+##########
+# Saving #
+##########
+
+path.out <- "Programs\\R\\Rev\\Mediation\\Output\\Triplet\\"
+
+output_name <- paste0(path.out, paste(paste("PP_stats_triplet", "alpha", alpha_signif, "Revision_01072024", sep = "_"), "txt", sep = "."))
+write.table(PP_stats_triplet[idx, -seq(37, 47)], file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+output_name <- paste0(path.out, paste(paste("PP_stats_triplet", "alpha", alpha_signif, "FINAL_Revision_01072024", sep = "_"), "txt", sep = "."))
+write.table(PP_stats_triplet_FINAL[idx_FINAL, -seq(37, 47)], file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+output_name <- paste0(path.out, paste(paste("PP_stats_triplet", "alpha", alpha_signif, "FDR", FDR_level, "Revision_01072024", sep = "_"), "txt", sep = "."))
+write.table(PP_stats_triplet[idx, -seq(37, 47)], file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+output_name <- paste0(path.out, paste(paste("PP_stats_triplet", "alpha", alpha_signif, "FDR", FDR_level, "FINAL_Revision_01072024", sep = "_"), "txt", sep = "."))
+write.table(PP_stats_triplet_FINAL[idx_FINAL, -seq(37, 47)], file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)

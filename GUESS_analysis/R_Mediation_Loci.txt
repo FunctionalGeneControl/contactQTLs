@@ -1,0 +1,611 @@
+
+rm(list = ls(all = TRUE))
+digits <- 3
+
+
+#########
+# Setup #
+#########
+
+start <- XXX   # Please specify start ID of locus to be analysed, e.g., 1
+finish <- XXX   # Please specify final ID of locus to be analysed, e.g., 1000
+
+PoV <- 0.05   # ***
+CPoV <- 0.99   # ***
+
+alpha <- 0.20   # ***
+sims <- 500   # ***
+
+Setup <- NULL
+Setup$alpha <- alpha
+Setup$sims <- sims
+
+
+#####################
+# Loading libraries #
+#####################
+
+library("MASS")
+library("Matrix")
+library("mediation")
+library("mvtnorm")
+library("sandwich")
+
+
+#####################
+# Setup directories #
+#####################
+
+# Working directory
+setwd("/home/lb664/")
+
+# Path directory
+path.in <- "Data/R2GUESS/"
+path.out <- "Programs/R/Mediation/Output_Triplet/Output_XXX/"
+
+
+#---------------------------------
+#### Helper functions
+#---------------------------------
+
+get_snps <- function(triplet_with_regions,snp_locs)
+{
+  chr <- triplet_with_regions$chr
+  start <- triplet_with_regions$final_region_start
+  end <- triplet_with_regions$final_region_end
+  snp_locs <- snp_locs
+  
+  tmp_snps <- snp_locs[snp_locs$chrom %in% chr,]
+  tmp_snps <- tmp_snps[tmp_snps$position>start & tmp_snps$position<end,]
+  
+  ##check that snps are also within 1Mb of RNA feature, which they all should be
+  rna_start <- triplet_with_regions$rna_start
+  rna_end <- triplet_with_regions$rna_end
+  tmp_snps$left <- abs(rna_start-tmp_snps$position)
+  tmp_snps$right <- abs(rna_end-tmp_snps$position)
+  
+  tmp_snps <- tmp_snps[tmp_snps$left<1e6 | tmp_snps$right<1e6,]
+  
+  return(tmp_snps$annot)
+}
+
+create_regions <- function(triplet_list,chic_loc,atac_loc,rna_loc,cisdist=5e3)
+{
+  triplet_list$atac_rna<-paste0(triplet_list$atac_feature,"_",triplet_list$rna_feature)
+  
+  triplet_list_results <- list()
+  cisdist <- cisdist
+  
+  for(i in 1:length(unique(triplet_list$atac_rna)))
+  {
+    ###determine region
+    tmp_triplet <- triplet_list[triplet_list$atac_rna %in% unique(triplet_list$atac_rna)[i],]
+    tmp_triplet$chr <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$chr
+    
+    #chic locations
+    tmp_triplet$chic_start <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$left
+    tmp_triplet$chic_end <- chic_loc[match(tmp_triplet$chic_feature,chic_loc$geneid),]$right
+    
+    #rna locations
+    tmp_triplet$rna_start <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$left
+    tmp_triplet$rna_end <- rna_loc[match(tmp_triplet$rna_feature,rna_loc$geneid),]$right
+    
+    #atac locations
+    tmp_triplet$atac_start <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$left
+    tmp_triplet$atac_end <- atac_loc[match(tmp_triplet$atac_feature,atac_loc$geneid),]$right
+    
+    ##check that "start" is always smaller than "end"
+    all(tmp_triplet$chic_start<tmp_triplet$chic_end)
+    
+    ##create region
+    chic_start <- min(tmp_triplet$chic_start)-cisdist
+    chic_end <- max(tmp_triplet$chic_end)+cisdist
+    chr <- tmp_triplet$chr[1]
+    
+    ##now create atac ranges
+    atac_start <- tmp_triplet$atac_start[1]-cisdist
+    atac_end <- tmp_triplet$atac_end[1]+cisdist
+    
+    ##define intersected region
+    if(atac_end>chic_start & atac_start<chic_start & atac_end<chic_end)
+    {
+      ##atac is on left side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end>chic_end & atac_start<chic_end & atac_start>chic_start){
+      ##atac is on right side of region
+      final_region_start <- chic_start
+      final_region_end <- atac_end
+    }else if(atac_end<chic_end & atac_start>chic_start){
+      ##atac region is within chic region
+      final_region_start <- atac_start
+      final_region_end <- atac_end
+      max_chic_atac_dist <- 0
+    }else if(atac_end>chic_end & atac_start<chic_start){
+      ##chic region is within atac region
+      final_region_start <- chic_start
+      final_region_end <- chic_end
+      max_chic_atac_dist <- 0
+    }
+    
+    final_region <- paste0(chr,"-",final_region_start,"-",final_region_end)
+    final_region_length <- final_region_end-final_region_start
+    # tmp_triplet$chic_region_start <- chic_start
+    # tmp_triplet$chic_region_end <- chic_end
+    # tmp_triplet$atac_region_start <- atac_start
+    # tmp_triplet$atac_region_end <- atac_end
+    tmp_triplet$final_region_start <- final_region_start
+    tmp_triplet$final_region_end <- final_region_end
+    tmp_triplet$final_region <- final_region
+    tmp_triplet$final_region_length <- final_region_length
+    # tmp_triplet$atac_peak_size <- tmp_triplet$atac_end-tmp_triplet$atac_start
+    # tmp_triplet$chic_size <- (tmp_triplet$chic_region_end-2500)-(tmp_triplet$chic_region_start+2500)
+    triplet_list_results[[i]] <- tmp_triplet
+  }
+  
+  triplet_list <- do.call(rbind,triplet_list_results)
+  
+  return(triplet_list)
+}
+
+create_triplet_matrix <- function(triplet_with_regions,chic_mat,rna_mat,atac_mat)
+{
+  chic_feature <- triplet_with_regions$chic_feature
+  atac_feature <- triplet_with_regions$atac_feature
+  rna_feature <- triplet_with_regions$rna_feature
+  
+  finaldf <- as.data.frame(t(rbind(chic_mat[chic_feature,],
+                           atac_mat[atac_feature,],
+                           rna_mat[rna_feature,])))
+  colnames(finaldf) <- c(chic_feature, atac_feature, rna_feature)
+  
+  return(finaldf)
+}
+
+
+#---------------------------------
+#### READ IN DATA
+#---------------------------------
+
+triplet_list <- read.csv(paste0(path.in,"triplet_list_100622.txt"),sep="\t",na.strings=c("","NA"))
+triplet_list <- triplet_list[complete.cases(triplet_list),]
+
+##matrixEQTL outputs - only used to determine the common SNPs. No filtering done.
+# chic_res <- readRDS(paste0(path.in,"CHiC_cis_MatrixEQTLout.rds"))
+# rna_res <- readRDS(paste0(path.in,"RNA_cis_MatrixEQTLout.rds"))
+# atac_res <- readRDS(paste0(path.in,"ATAC_cis_MatrixEQTLout.rds"))
+
+##feature locations
+chic_locs <- read.table(paste0(path.in,"CHiC_gene_locations.csv"))
+rna_locs <- read.table(paste0(path.in,"RNA_gene_locations.csv"))
+atac_locs <- read.table(paste0(path.in,"ATAC_gene_locations.csv"))
+snp_locs <- as.data.frame(data.table::fread(paste0(path.in,"snp_chromlocations.csv")))
+
+##feature matrices - rlogtransformed
+load(paste0(path.in,"eGenes_CHiC_Rev.RData"))
+load(paste0(path.in,"eGenes_RNA_Rev.RData"))
+load(paste0(path.in,"peaks_ATAC_Rev.RData"))
+geno_mat <- as.data.frame(data.table::fread(paste0(path.in,"genotype_012mat.txt")))
+rownames(geno_mat) <- geno_mat$SNP
+geno_mat$SNP <- "NULL"
+colnames(geno_mat) <- gsub("-",".",colnames(geno_mat))
+
+message("defining regions...")
+triplet_list <- create_regions(triplet_list=triplet_list,chic_loc=chic_locs,
+                               rna_loc=rna_locs,atac_loc=atac_locs,cisdist=5e3)
+
+##make sure colnames are matching
+cols <- intersect(colnames(chic_mat),colnames(rna_mat))
+cols2 <- intersect(colnames(geno_mat),colnames(atac_mat))
+cols <- intersect(cols,cols2)
+atac_mat <- atac_mat[,cols]
+rna_mat <- rna_mat[,cols]
+geno_mat <- geno_mat[,cols]
+chic_mat <- chic_mat[,cols]
+
+##this list of SNPs from Helen to make sure we dont include anything we shouldnt
+final_snps <- readRDS(paste0(path.in,"2022-07-06_final_snp_list.rds"))
+
+##there are NAs in the triplet_list
+triplet_matrix_list <- list()
+geno_matrix_list <- list()
+
+fn <- Sys.glob(file.path(path.out, "Stats_triplet.txt"))
+
+if (any(file.exists(fn)))
+{
+  input_name <- paste0(path.out, "Stats_triplet.txt")
+  stats_triplet <- read.table(input_name, header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE)
+} else {
+  stats_triplet <- NULL
+}
+
+############
+# Printing #
+############
+
+print(c("Starting sequence:", start))
+
+time_loading_cum <- 0
+time_running_cum <- 0
+
+for (i in start : finish)
+{ 
+  start_time <- Sys.time()
+  triplet <- triplet_list[i,]
+  
+  if (sum(rownames(chic_mat) == triplet$chic_feature) + 
+      sum(rownames(atac_mat) == triplet$atac_feature) +
+      sum(rownames(rna_mat) == triplet$rna_feature) < 3)
+  {
+    next
+  }
+  
+  triplet_matrix_list[[i]] <- create_triplet_matrix(triplet=triplet,chic_mat=chic_mat,
+                                                    rna_mat=rna_mat,atac_mat=atac_mat)
+  snps <- get_snps(triplet_with_regions=triplet,snp_locs=snp_locs)
+  
+  ##making sure they match Helens filtered list of SNPs
+  snps <- snps[snps %in% final_snps]
+  geno_matrix_list[[i]] <- geno_mat[snps,]
+  end_time <- Sys.time()
+  time_loading <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+  time_loading_cum <- time_loading + time_loading_cum
+  time_loading_pred <- time_loading_cum / (i - start + 1) * nrow(triplet_list) / 60
+  
+  start_time <- Sys.time()
+  
+  
+###################
+# Mediation: Data #
+###################
+  
+  data.Y <- data.frame(triplet_matrix_list[[i]])
+  
+  if (any(apply(data.Y, 2, sd) == 0))
+  {
+    next
+  }
+  
+  label.Y <- colnames(data.Y)
+  n_data.Y <- nrow(data.Y)
+  p_data.Y <- ncol(data.Y)
+  cor_data.Y <- cor(data.Y)
+  which <- which.max(abs(cor_data.Y[lower.tri(cor_data.Y)]))
+  max_cor_data.Y <- cor_data.Y[lower.tri(cor_data.Y)][which]
+  data.X <- t(geno_matrix_list[[i]])
+  label.X <- colnames(data.X)
+  data.X <- data.frame(data.X)
+  n_data.X <- nrow(data.X)
+  p_data.X <- ncol(data.X)
+  p_data.X_OLD <- p_data.X
+  
+  if (p_data.X == 0)
+  {
+    p_data.X <- 3
+    data.X <- matrix(rbinom(n_data.X * p_data.X, 3, 0.05), n_data.X, p_data.X)
+    label.X <- rep("***", p_data.X)
+    data.X <- data.frame(data.X)
+    n_data.X <- nrow(data.X)
+    p_data.X <- ncol(data.X)
+    p_data.X_OLD <- paste0(ncol(data.X), "*")
+  } else {
+    
+    while (p_data.X <= 2)
+    {
+      data.X <- cbind(data.X, data.X[, 1])
+      label.X <- colnames(data.X)
+      data.X <- data.frame(data.X)
+      n_data.X <- nrow(data.X)
+      p_data.X <- ncol(data.X)
+      p_data.X_OLD <- paste0(ncol(data.X), "*")
+    }
+  
+  }
+  
+  cor_data.X <- cor(data.X)
+  which <- which.max(abs(cor_data.X[lower.tri(cor_data.X)]))
+  max_cor_data.X <- cor_data.X[lower.tri(cor_data.X)][which]
+  
+  MAP.file <- matrix(NA, p_data.X, 3)
+  colnames(MAP.file) <- c("SNPName", "Chr", "Posn")
+  MAP.file[, 1] <- label.X
+  MAP.file[, 2] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4)]
+  MAP.file[, 3] <- unlist(strsplit(label.X, ":"))[seq(1, (p_data.X * 4), by = 4) + 1]
+  MAP.file <- NULL   # ***
+  
+  root.file.output <- paste(i, "CHiC_ATAC_RNA", sep = "_")
+  
+  
+################
+# PC treatment #
+################
+  
+  data.X_pca <- prcomp(data.X)
+  data.X_pca <- data.X_pca$x[, summary(data.X_pca)$importance[3, ] <= CPoV]
+  n_data.X_pca <- nrow(data.X_pca)
+  p_data.X_pca <- ncol(data.X_pca)
+  
+  if (is.null(p_data.X_pca))
+  {
+    data.X_pca <- prcomp(data.X)$x[, 1]
+    p_data.X_pca <- 1
+  }
+  
+  if (p_data.X_pca == 0)
+  {
+    data.X_pca <- prcomp(data.X)$x[, 1]
+    p_data.X_pca <- 1
+  }
+  
+  
+############
+# Printing #
+############
+  
+  print("*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***")
+  print(root.file.output)
+  print(paste(label.Y, collapse = "/"))
+  print(p_data.X_pca)
+  
+  
+######################
+# Mediation: Running #
+######################
+  
+  colnames(data.Y) <- c("CHiC", "ATAC", "RNA")
+  data <- cbind(data.X_pca, data.Y)
+  n <- nrow (data)        # Number of rows
+  V <- colnames(data)     # Column names
+  V[1 : p_data.X_pca] <- paste("PC", 1 : p_data.X_pca, sep = "")
+  colnames(data) <- V
+  output <- data.matrix(matrix("", 4, 11))
+  rownames(output) <- c("PC->ATAC->CHiC", "PC->ATAC->RNA", "PC->CHiC->RNA", "PC->CHiC->RNA,ATAC")
+  colnames(output) <- c("Treatment", "TotEff", "p-value", "ADE", "p-value", "ACME", "p-value", "PropMed", "p-value", "ADE_Sens", "ACME_Sens")
+  
+  for (p in 1 : p_data.X_pca)
+  {
+    treatment <- paste0("PC", p)
+    
+    
+############
+# Printing #
+############
+    
+    print(treatment)
+    
+    
+#############################
+# Model: PC -> ATAC -> CHiC #
+#############################
+    
+    print("Model: PC -> ATAC -> CHiC")
+    
+    fmla.0 <- formula(paste0("CHiC ~ ", treatment))
+    fmla.Y <- formula(paste0("CHiC ~ ATAC + ", treatment))
+    fmla.M <- formula(paste0("ATAC ~ ", treatment))
+    
+    M.0 <- lm(fmla.0, data)
+    M.Y <- lm(fmla.Y, data)
+    M.M <- lm(fmla.M, data)
+    fit <- mediate(M.M, M.Y, treat = treatment, mediator = "ATAC", boot = TRUE, sims = sims, conf.level = 1 - alpha)
+    # print(summary(fit))
+    
+    sens <- medsens(fit, rho.by = 0.1, eps = sqrt(.Machine$double.eps), effect.type = "both", sims = sims)
+    # print(summary(sens))
+    
+    if (output[1, 1] == "" & fit$d0.p < alpha)
+    {
+      output[1, 1] <- treatment
+      output[1, 2] <- round(fit$tau.coef, digits)
+      output[1, 3] <- round(fit$tau.p, digits)
+      output[1, 4] <- round(fit$z0, digits)
+      output[1, 5] <- round(fit$z0.p, digits)
+      output[1, 6] <- round(fit$d0, digits)
+      output[1, 7] <- round(fit$d0.p, digits)
+      output[1, 8] <- round(fit$n0, digits)
+      output[1, 9] <- round(fit$n0.p, digits)
+      output[1, 10] <- round(sens$err.cr.z, digits)
+      output[1, 11] <- round(sens$err.cr.d, digits)
+    } else if (output[1, 1] != "" & fit$d0.p < alpha) {
+      output[1, 1] <- paste(output[1, 1], treatment, sep = ",")
+      output[1, 2] <- paste(output[1, 2], round(fit$tau.coef, digits), sep = ",")
+      output[1, 3] <- paste(output[1, 3], round(fit$tau.p, digits), sep = ",")
+      output[1, 4] <- paste(output[1, 4], round(fit$z0, digits), sep = ",")
+      output[1, 5] <- paste(output[1, 5], round(fit$z0.p, digits), sep = ",")
+      output[1, 6] <- paste(output[1, 6], round(fit$d0, digits), sep = ",")
+      output[1, 7] <- paste(output[1, 7], round(fit$d0.p, digits), sep = ",")
+      output[1, 8] <- paste(output[1, 8], round(fit$n0, digits), sep = ",")
+      output[1, 9] <- paste(output[1, 9], round(fit$n0.p, digits), sep = ",")
+      output[1, 10] <- paste(output[1, 10], round(sens$err.cr.z, digits), sep = ",")
+      output[1, 11] <- paste(output[1, 11], round(sens$err.cr.d, digits), sep = ",")
+    }
+    
+    rm(fit)
+    rm(sens)
+    
+    
+############################
+# Model: PC -> ATAC -> RNA #
+############################
+    
+    print("Model: PC -> ATAC -> RNA")
+    
+    fmla.0 <- formula(paste0("RNA ~ ", treatment))
+    fmla.Y <- formula(paste0("RNA ~ ATAC + ", treatment))
+    fmla.M <- formula(paste0("ATAC ~ ", treatment))
+    
+    M.0 <- lm(fmla.0, data)
+    M.Y <- lm(fmla.Y, data)
+    M.M <- lm(fmla.M, data)
+    fit <- mediate(M.M, M.Y, treat = treatment, mediator = "ATAC", boot = TRUE, sims = sims, conf.level = 1 - alpha)
+    # print(summary(fit))
+    
+    sens <- medsens(fit, rho.by = 0.1, eps = sqrt(.Machine$double.eps), effect.type = "both", sims = sims)
+    # print(summary(sens))
+    
+    if (output[2, 1] == "" & fit$d0.p < alpha)
+    {
+      output[2, 1] <- treatment
+      output[2, 2] <- round(fit$tau.coef, digits)
+      output[2, 3] <- round(fit$tau.p, digits)
+      output[2, 4] <- round(fit$z0, digits)
+      output[2, 5] <- round(fit$z0.p, digits)
+      output[2, 6] <- round(fit$d0, digits)
+      output[2, 7] <- round(fit$d0.p, digits)
+      output[2, 8] <- round(fit$n0, digits)
+      output[2, 9] <- round(fit$n0.p, digits)
+      output[2, 10] <- round(sens$err.cr.z, digits)
+      output[2, 11] <- round(sens$err.cr.d, digits)
+    } else if (output[2, 1] != "" & fit$d0.p < alpha) {
+      output[2, 1] <- paste(output[2, 1], treatment, sep = ",")
+      output[2, 2] <- paste(output[2, 2], round(fit$tau.coef, digits), sep = ",")
+      output[2, 3] <- paste(output[2, 3], round(fit$tau.p, digits), sep = ",")
+      output[2, 4] <- paste(output[2, 4], round(fit$z0, digits), sep = ",")
+      output[2, 5] <- paste(output[2, 5], round(fit$z0.p, digits), sep = ",")
+      output[2, 6] <- paste(output[2, 6], round(fit$d0, digits), sep = ",")
+      output[2, 7] <- paste(output[2, 7], round(fit$d0.p, digits), sep = ",")
+      output[2, 8] <- paste(output[2, 8], round(fit$n0, digits), sep = ",")
+      output[2, 9] <- paste(output[2, 9], round(fit$n0.p, digits), sep = ",")
+      output[2, 10] <- paste(output[2, 10], round(sens$err.cr.z, digits), sep = ",")
+      output[2, 11] <- paste(output[2, 11], round(sens$err.cr.d, digits), sep = ",")
+    }
+    
+    rm(fit)
+    rm(sens)
+    
+    
+############################
+# Model: PC -> CHiC -> RNA #
+############################
+    
+    print("Model: PC -> CHiC -> RNA")
+    
+    fmla.0 <- formula(paste0("RNA ~ ", treatment))
+    fmla.Y <- formula(paste0("RNA ~ CHiC + ", treatment))
+    fmla.M <- formula(paste0("CHiC ~ ", treatment))
+    
+    M.0 <- lm(fmla.0, data)
+    M.Y <- lm(fmla.Y, data)
+    M.M <- lm(fmla.M, data)
+    fit <- mediate(M.M, M.Y, treat = treatment, mediator = "CHiC", boot = TRUE, sims = sims, conf.level = 1 - alpha)
+    # print(summary(fit))
+    
+    sens <- medsens(fit, rho.by = 0.1, eps = sqrt(.Machine$double.eps), effect.type = "both", sims = sims)
+    # print(summary(sens))
+    
+    if (output[3, 1] == "" & fit$d0.p < alpha)
+    {
+      output[3, 1] <- treatment
+      output[3, 2] <- round(fit$tau.coef, digits)
+      output[3, 3] <- round(fit$tau.p, digits)
+      output[3, 4] <- round(fit$z0, digits)
+      output[3, 5] <- round(fit$z0.p, digits)
+      output[3, 6] <- round(fit$d0, digits)
+      output[3, 7] <- round(fit$d0.p, digits)
+      output[3, 8] <- round(fit$n0, digits)
+      output[3, 9] <- round(fit$n0.p, digits)
+      output[3, 10] <- round(sens$err.cr.z, digits)
+      output[3, 11] <- round(sens$err.cr.d, digits)
+    } else if (output[3, 1] != "" & fit$d0.p < alpha) {
+      output[3, 1] <- paste(output[3, 1], treatment, sep = ",")
+      output[3, 2] <- paste(output[3, 2], round(fit$tau.coef, digits), sep = ",")
+      output[3, 3] <- paste(output[3, 3], round(fit$tau.p, digits), sep = ",")
+      output[3, 4] <- paste(output[3, 4], round(fit$z0, digits), sep = ",")
+      output[3, 5] <- paste(output[3, 5], round(fit$z0.p, digits), sep = ",")
+      output[3, 6] <- paste(output[3, 6], round(fit$d0, digits), sep = ",")
+      output[3, 7] <- paste(output[3, 7], round(fit$d0.p, digits), sep = ",")
+      output[3, 8] <- paste(output[3, 8], round(fit$n0, digits), sep = ",")
+      output[3, 9] <- paste(output[3, 9], round(fit$n0.p, digits), sep = ",")
+      output[3, 10] <- paste(output[3, 10], round(sens$err.cr.z, digits), sep = ",")
+      output[3, 11] <- paste(output[3, 11], round(sens$err.cr.d, digits), sep = ",")
+    }
+    
+    rm(fit)
+    rm(sens)
+    
+    
+##############################################################
+# Model: PC -> CHiC -> RNA with ATAC -> CHiC and ATAC -> RNA #
+##############################################################
+    
+    print("Model: PC -> CHiC -> RNA  with ATAC -> CHiC and ATAC -> RNA")
+    
+    fmla.0 <- formula(paste0("RNA ~ ATAC + ", treatment))
+    fmla.Y <- formula(paste0("RNA ~ ATAC + CHiC + ", treatment))
+    fmla.M <- formula(paste0("CHiC ~ ATAC + ", treatment))
+    
+    M.0 <- lm(fmla.0, data)
+    M.Y <- lm(fmla.Y, data)
+    M.M <- lm(fmla.M, data)
+    
+    fit <- mediate(M.M, M.Y, treat = treatment, mediator = "CHiC", covariates = "ATAC", boot = TRUE, sims = sims, conf.level = 1 - alpha)
+    # print(summary(fit))
+    
+    sens <- medsens(fit, rho.by = 0.1, eps = sqrt(.Machine$double.eps), effect.type = "both", sims = sims)
+    # print(summary(sens))
+    
+    if (output[4, 1] == "" & fit$d0.p < alpha)
+    {
+      output[4, 1] <- treatment
+      output[4, 2] <- round(fit$tau.coef, digits)
+      output[4, 3] <- round(fit$tau.p, digits)
+      output[4, 4] <- round(fit$z0, digits)
+      output[4, 5] <- round(fit$z0.p, digits)
+      output[4, 6] <- round(fit$d0, digits)
+      output[4, 7] <- round(fit$d0.p, digits)
+      output[4, 8] <- round(fit$n0, digits)
+      output[4, 9] <- round(fit$n0.p, digits)
+      output[4, 10] <- round(sens$err.cr.z, digits)
+      output[4, 11] <- round(sens$err.cr.d, digits)
+    } else if (output[4, 1] != "" & fit$d0.p < alpha) {
+      output[4, 1] <- paste(output[4, 1], treatment, sep = ",")
+      output[4, 2] <- paste(output[4, 2], round(fit$tau.coef, digits), sep = ",")
+      output[4, 3] <- paste(output[4, 3], round(fit$tau.p, digits), sep = ",")
+      output[4, 4] <- paste(output[4, 4], round(fit$z0, digits), sep = ",")
+      output[4, 5] <- paste(output[4, 5], round(fit$z0.p, digits), sep = ",")
+      output[4, 6] <- paste(output[4, 6], round(fit$d0, digits), sep = ",")
+      output[4, 7] <- paste(output[4, 7], round(fit$d0.p, digits), sep = ",")
+      output[4, 8] <- paste(output[4, 8], round(fit$n0, digits), sep = ",")
+      output[4, 9] <- paste(output[4, 9], round(fit$n0.p, digits), sep = ",")
+      output[4, 10] <- paste(output[4, 10], round(sens$err.cr.z, digits), sep = ",")
+      output[4, 11] <- paste(output[4, 11], round(sens$err.cr.d, digits), sep = ",")
+    }
+    
+    rm(fit)
+    rm(sens)
+  }
+  
+  end_time <- Sys.time()
+  time_running <- as.numeric(difftime(time1 = end_time, time2 = start_time, units = "min"))
+  time_running_cum <- time_running + time_running_cum
+  time_running_pred <- time_running_cum / (i - start + 1) * nrow(triplet_list) / 60
+  
+  
+############
+# Printing #
+############
+  
+  # print(root.file.output)
+  # print(paste(label.Y, collapse = "/"))
+  
+  print(output)
+  
+  print(c("Time loading:", round(c(time_loading, time_loading_pred), digits = digits)))
+  print(c("Time running:", round(c(time_running, time_running_pred), digits = digits)))
+  
+  stats_triplet <- rbind(stats_triplet, c(i, paste(label.Y, collapse = "/"), p_data.X_pca, c(t(output))))
+  colnames(stats_triplet) <- c("Triplet ID", "Triplet name", "No PCs", 
+                             c("M1:Treatment", "M1:TotEff", "M1:p-value", "M1:ADE", "M1:p-value", "M1:ACME", "M1:p-value", "M1:PropMed", "M1:p-value", "M1:ADE_Sens", "M1:ACME_Sens", 
+                               "M2:Treatment", "M2:TotEff", "M2:p-value", "M2:ADE", "M2:p-value", "M2:ACME", "M2:p-value", "M2:PropMed", "M2:p-value", "M2:ADE_Sens", "M2:ACME_Sens",  
+                               "M3:Treatment", "M3:TotEff", "M3:p-value", "M3:ADE", "M3:p-value", "M3:ACME", "M3:p-value", "M3:PropMed", "M3:p-value", "M3:ADE_Sens", "M3:ACME_Sens",  
+                               "M4:Treatment", "M4:TotEff", "M4:p-value", "M4:ADE", "M4:p-value", "M4:ACME", "M4:p-value", "M4:PropMed", "M4:p-value", "M4:ADE_Sens", "M4:ACME_Sens")) 
+  
+  
+##########
+# Saving #
+##########
+  
+  output_name <- paste0(path.out, paste(paste("Stats_triplet", "alpha", alpha, sep = "_"), "txt", sep = "."))
+  write.table(stats_triplet, file = output_name, quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+}

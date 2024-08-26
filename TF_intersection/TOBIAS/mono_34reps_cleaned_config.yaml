@@ -1,0 +1,24 @@
+#-------------------------------------------------------------------------#
+#-------------------------- TOBIAS input data ----------------------------#
+#-------------------------------------------------------------------------#
+
+data:
+  monocytes: [clean_mono_data/*.bam]                                   #list of .bam-files
+  
+run_info:
+  organism: human                           #mouse/human
+  fasta: ~/HRJ_monocytes/external_data/GRCh38/GRCh38_all_chr.fa.gz             #.fasta-file containing organism genome
+  blacklist: ~/HRJ_monocytes/external_data/ENCODE/ENCFF356LFX_blacklist_hg38.bed        #.bed-file containing blacklisted regions
+  gtf: ~/HRJ_monocytes/external_data/GENCODE/gencode.v36.annotation.gtf                  #.gtf-file for annotation of peaks
+  motifs: ~/spivakov/JASPAR/JASPAR2020_CORE_vertebrates_non-redundant_pfms_jaspar/*          #motifs (directory with files or individual files in MEME/JASPAR/PFM format)
+  output: clean_mono_34reps                       #output directory 
+
+
+#-------------------------------------------------------------------------#
+#----------------------- Default module parameters -----------------------#
+#-------------------------------------------------------------------------#
+
+macs: "--nomodel --shift -100 --extsize 200 --broad"
+atacorrect: ""
+footprinting: ""
+bindetect: ""

@@ -50,10 +50,10 @@ library(EnvStats)
 #all_snps_pos[Chr != CHR_B] # none
 
 # Now need to ask, if any of SNP_B affect DpnII sites and are in same frag as SNP A, then we remove SNP A.
-# copying and adapting code from /rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/findmotifs/scripts/get_dpnII_new_sites_CHi-C_SNPs_allProxies.R
+# copying and adapting code from ~/HRJ_monocytes/findmotifs/scripts/get_dpnII_new_sites_CHi-C_SNPs_allProxies.R
 # to run the below, qsub find_dpnii_motifs.sh
 
-#myseq <- fread("/rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/findmotifs/snp_fasta/ALL_genotyped_SNPs_REF_40bp_fasta_with_locations.txt")
+#myseq <- fread("~/HRJ_monocytes/findmotifs/snp_fasta/ALL_genotyped_SNPs_REF_40bp_fasta_with_locations.txt")
 #setkey(myseq, SNP, Chr) # Going to join to the proxies, i.e. "SNP_B"
 #sets_seqs1 <- all_snps_pos[myseq, on = c(SNP_B = "SNP", "Chr"), nomatch = NULL]
 #sets_seqs1 <- sets_seqs1[CHR_B == Chr]
@@ -125,7 +125,7 @@ mutate_seqs_nt <- function(myseq) {
 
 
 #### write the results
-#setwd("/rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/AS_CHiC/BaseQTL/scripts/non_eqtls/dpnII_sites")
+#setwd("~/HRJ_monocytes/AS_CHiC/BaseQTL/scripts/non_eqtls/dpnII_sites")
 #fwrite(eqs_mutated, file = "gwas_and_nongwas_noneQTLs_otherEnd_LD.REFALTseqs.txt", 
 #       row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t")
 
@@ -162,7 +162,7 @@ new_seqs <- fread("gwas_and_nongwas_noneQTLs_otherEnd_LD.DpnII.REFALTseqs.txt")
 new_seqs_sep <- as.data.table(new_seqs %>% separate_rows(hg19Proxy_ID, sep = "_"))
 length(unique(new_seqs_sep$hg19SNP_ID)) # 73,741
 # put them into DpnII fragments.
-dpnII <- fread("/rds/general/project/lms-spivakov-analysis/live/Design/Human_eQTL_CHiC_DpnII_hg38/hg38_dpnII.rmap")
+dpnII <- fread("~/spivakov/Design/Human_eQTL_CHiC_DpnII_hg38/hg38_dpnII.rmap")
 names(dpnII) = c("Chr", "baitStart", "baitEnd", "baitID")
 str(dpnII)
 
@@ -178,7 +178,7 @@ setnames(new_seqs_hg381, "hg38pos", "hg38SNP_pos")
 
 # next the hg38pos for the proxy snp
 # sadly have to go back to geno snps file
-myseq <- fread("/rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/findmotifs/snp_fasta/ALL_genotyped_SNPs_REF_40bp_fasta_with_locations.txt")
+myseq <- fread("~/HRJ_monocytes/findmotifs/snp_fasta/ALL_genotyped_SNPs_REF_40bp_fasta_with_locations.txt")
 myseq_small <- myseq[, .(SNP, hg38SNP_loc)]
 setnames(myseq_small, c("SNP", "hg38SNP_loc"), c("hg19Proxy_ID", "hg38Proxy_pos"))
 setkey(myseq_small, hg19Proxy_ID)
@@ -244,7 +244,7 @@ new_seqs_hg38_dpnII_PURGED[feature %like% "10:13261773:C:T_non_gwas_chicago_scor
 new_seqs_hg38_dpnII_PURGED[feature %like% "10:13261559:T:C_non_gwas_chicago_score3_otherEnd"]
 # yep, these ones are ok
 
-# generally it seems like if a locus has more than one snp, it is more likely to be real!
+# generally it seems like if a locus has more than one snp, it is more likely to be real.
 
 ##### Overall compare the results for eQTL versus non eQTL (non gwas and gwas)
 ### have to first of all purge the results for dpnII effects in eQTL res and in gwas/nongwas res.
@@ -352,7 +352,7 @@ library(data.table)
 library(ggplot2)
 library(dplyr)
 
-setwd("/rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/BaseQTL/findings_round2_dpnIICorrection/")
+setwd("~/HRJ_monocytes/BaseQTL/findings_round2_dpnIICorrection/")
 #### First try a stratified random sampling method to normalise for read counts. Then, check median "normal approximation" from BaseQTL.
 old <- fread("./CountsCompare_BaseQTL_normAprrox_CHiC.txt") # just to check
 CountsCompare_resd <- fread("./CountsCompare_BaseQTL_normAprrox_CHiC.DISTAL.txt") # we have removed eQTL distal effects, but allowed for AI to be "NA"
@@ -403,7 +403,7 @@ nongwas <- CountsCompare_resd[type.3 == "non_gwas"]
 max_count <- max(c(max(eqtl$read_count), max(gwas$read_count), max(nongwas$read_count)))
 
 
-######## CODING WITH MIKHAIL
+######## Perturbation test
 quantile(CountsCompare_resd[type.3 == "eQTL", read_count])
 nrow(CountsCompare_resd[type.3!="eQTL" & read_count>112])
 nrow(CountsCompare_resd[type.3=="eQTL" & read_count>112])
@@ -463,142 +463,9 @@ ggplot(dtplot, aes(effect, color = `Type of SNP`)) + stat_ecdf(geom = "point", s
   guides(colour = guide_legend(override.aes = list(size=2, alpha = 1)))
 dev.off()
 
-# are they significanrly different?
+# are they significantly different?
 wilcox.test(effect ~ `Type of SNP`, data = dtplot)
 # yes, significantly different from each other.
 # p = 4.531 e-12
-
-################### older stuff below
-
-
-
-
-
-
-qqplot(-log10(1-expected), -log10(1-observed))
-lm(-log10(1-expected) ~ -log10(1-observed))
-expected2 <- -log10(1-expected)
-observed2 <- -log10(1-observed)
-lm(observed2 ~ expected2)
-# error because some valyes of expected are infinite
-any(is.infinite(expected2)) # because log10(0) = -inf
-any(is.infinite(expected))
-#Error in lm.fit(x, y, offset = offset, singular.ok = singular.ok, ...) : 
-#  NA/NaN/Inf in 'x'
-
-# so we can exclude these
-both <- data.table("expected" = expected, "observed" = observed)
-
-both2 <- both[expected < 1 & observed < 1]
-lm((-log10(1-both2$observed)) ~ (-log10(1-both2$expected)))
-# ????????????????????????????????????
-qqplot(-log10(1-both2$expected), -log10(1-both2$observed))
-model <- lm(-log10(1-observed) ~ -log10(1-expected), data = both2)
-qqplot(-log10(1-both2$expected), -log10(1-both2$observed))
-abline(model)
-# does not work.
-# try the package QQperm with function qqplot
-
-
-# Combine the data frames and use the ipw column as weights to create a weighted sample
-sampled_data <- as.data.table(CountsCompare_resd %>%
-                                sample_n(size = 300, replace = TRUE, weight = ipw) %>%
-                                select(feat, type.3, read_count, inverse_norm_approx)) # remove ipw column from sampled data
-setindex(sampled_data, NULL)
-quantile(CountsCompare_resd[type.3 == "eQTL", read_count])
-quantile(CountsCompare_resd[type.3 == "gwas", read_count])
-quantile(CountsCompare_resd[type.3 == "non_gwas", read_count])
-# they look more similar.
-## try with a few iterations.
-# Set the number of iterations
-n_iter <- 100
-
-# Initialize an empty list to store the sampled data frames
-sampled_data_list <- list()
-
-# Repeat the sampling process n_iter times
-for (i in 1:n_iter) {
-  
-  # Code for stratified random sampling or IPW (depending on the approach)
-  sampled_data <- CountsCompare_resd %>%
-    sample_n(size = 300, replace = FALSE, weight = ipw) %>%
-    select(feat, type.3, read_count, inverse_norm_approx) # remove ipw column from sampled data
-  
-  # Store the sampled data frame in the list
-  sampled_data_list[[i]] <- sampled_data
-}
-
-# Combine the sampled data frames into a single data frame
-sampled_data_all <- do.call(rbind, sampled_data_list)
-
-## Now, set up a list to store the effect sizes
-effect_sizes <- list()
-
-# Loop over the sampled data frames and calculate the effect size for each category
-dt <- data.table()
-for (i in 1:n_iter) {
-  
-  # Extract the category and measurement variable columns from the sampled data frame
-  data_i <- as.data.table(sampled_data_list[[i]])
-  
-  setindex(data_i, NULL)
-  eqtl_res <- median(data_i[type.3 == "eQTL", inverse_norm_approx], na.rm = T)
-  gwas_res <- median(data_i[type.3 == "gwas", inverse_norm_approx], na.rm = T)
-  nongwas_res <- median(data_i[type.3 == "non_gwas", inverse_norm_approx], na.rm = T)
-  dti <- data.table(eQTL = eqtl_res, gwas = gwas_res, non_gwas = nongwas_res)
-  
-  # Store the effect size in the effect_sizes list
-  dt <- rbind(dt, dti)
-}
-
-to_plot <- melt.data.table(dt, measure.vars = c("eQTL", "gwas", "non_gwas"), variable.name = "Category", value.name = "median_inverse_normal_approx")
-
-# Plot a dotplot of the effect sizes
-library(ggplot2)
-ggplot(to_plot, aes(x = Category, y = median_inverse_normal_approx, col = Category)) +
-  geom_point() +
-  xlab("Category") +
-  ylab("median_inverse_normal_approx")
-
-# Plot boxplots of the effect sizes
-ggplot(to_plot, aes(x = Category, y = median_inverse_normal_approx, col = Category)) +
-  geom_boxplot() +
-  xlab("Category") +
-  ylab("median_inverse_normal_approx")
-
-### After sampling based on readCount, the normal approximations still look different between categories.
-
-### Earlier stuff doing a basic comparison of effects (not comparing for read counts)
-### Looking in either 2 categories (non eQTL or eQTL) or 3 categories, as above.
-### Also splitting by test type: within indiviudals and between individuals.
-resd <- fread("/rds/general/project/lms-spivakov-analysis/live/HRJ_monocytes/BaseQTL/findings_round2_dpnIICorrection/BaseQTL_CHiC_categories.txt")
-ggplot(resd, aes(x = type.2, y = inverse_norm_approx)) + geom_boxplot()+
-  scale_fill_brewer(palette = "Paired") + theme_light() + 
-  ylab("Inverse normal approximation, BaseQTL CHi-C") +
-  xlab("Type of SNP")
-wilcox.test(inverse_norm_approx ~ type.2, data = resd)
-# very significant.
-
-# split by the type of model.
-
-ggplot(resd, aes(x = type.2, y = inverse_norm_approx, fill = model)) + geom_boxplot() +
-  scale_fill_brewer(palette = "Paired") + theme_light() +
-  ylab("Inverse normal approximation, BaseQTL CHi-C") +
-  xlab("Type of SNP")
-
-# split by the type of non-eQTL: GWAS or non GWAS
-ggplot(resd, aes(x = type.3, y = inverse_norm_approx, fill = type.2)) + geom_boxplot() +
-  scale_fill_brewer(palette = "Paired") + theme_light() + 
-  ylab("Inverse normal approximation, BaseQTL CHi-C") +
-  xlab("Type of SNP")
-
-kruskal.test(inverse_norm_approx ~ type.3, data = resd)
-dunnTest(inverse_norm_approx ~ type.3, data = resd, method = "bonferroni")
-# all significantly different from each other.
-
-
-
-
-
 
 

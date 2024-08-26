@@ -1,0 +1,1 @@
+cQTLs were combined between BaseQTL and GUESS. TF intersectsions were done using ChIP-seq data (ReMap 2022 catalog, in-house CTCF) and ATAC-seq predicted TF binding (MaxATAC, TOBIAS)

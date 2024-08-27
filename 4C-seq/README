@@ -1,0 +1,8 @@
+4C-seq analysis was done for:
+- allele-specific analysis at THBS1
+- allele-specific analysis at PCK2
+- comparison of CRISPRi vs control samples at THBS1
+
+1) (allele-specific): split reads based on allele
+2) Map reads using pipe4C
+3) Identify interactions using 4Cker

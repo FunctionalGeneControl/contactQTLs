@@ -1,1 +1,5 @@
 cQTLs were combined between BaseQTL and GUESS. TF intersectsions were done using ChIP-seq data (ReMap 2022 catalog, in-house CTCF) and ATAC-seq predicted TF binding (MaxATAC, TOBIAS)
+
+Perturbation effects were determined using DeepSea and Enformer. Only cQTLs intersecting TF binding evidence were considered.
+
+Motif analysis was performed using motifbreakR.

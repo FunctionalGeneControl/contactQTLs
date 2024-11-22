@@ -1,13 +1,4 @@
 library(data.table)
-setwd("~/OneDrive - Imperial College London/eQTL_capture_HiC/")
-# conc = fread("GUESS_conc_disc.txt")
-# GUESS_chic_beta_std = scale(conc$GUESS_chic_beta)
-# GUESS_atac_beta_std = scale(conc$GUESS_ATAC_beta)
-# GUESS_RNA_beta_std = scale(conc$GUESS_RNA_beta)
-# means = rowMeans(cbind(abs(GUESS_chic_beta_std), abs(GUESS_atac_beta_std), abs(GUESS_RNA_beta_std)))
-# boxplot(list(Concordant=means[conc$overall_concordance==TRUE], Discordant=means[conc$overall_concordance==FALSE]))
-
-
 guess = fread("Table_S9_GUESS_Rev.txt") # 919
 guess1 = guess[-grep(",", guess[["FDR_rsids"]])] # 869
 effects = strsplit(guess1[["Post-proc. best model post. E(Beta|Y)"]], ",")

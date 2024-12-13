@@ -1,0 +1,778 @@
+---
+title: "Comparing GUESS with BaseQTL using Zscore"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "~/HRJ_monocytes/leo_triplets")
+knitr::opts_knit$set(root.dir = "~/Documents/analysis/from_leo/comparisons")
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(data.table)
+library(ggplot2)
+library(forcats)
+library(confintr)
+```
+
+### Compare the effects from BaseQTL with the effects from GUESS
+For each modality, first look at the normal approximation in BaseQTL versus the post.proc poster probability for the best model containing that SNP in GUESS.
+Then look at the distributions of effects across both analyses.
+
+
+```{r load datasets}
+trip <- fread("../Rev/R2GUESS_PP_stats_triplet_mPPI_FDR_0.05_RS_FINAL.txt")
+peak_locs <- as.data.table(read.table("../input/alex_inputs/ATAC_gene_locations.csv"))
+names(peak_locs) = c("Peak_name", "chrom", "peakStart", "peakEnd")
+base_chic <- fread("../../BaseQTL_results/CHiC/round2_refBias/CHiC_BaseQTL_Elena_round2_wNormApprox.txt")
+dpn <- fread("../../BaseQTL_results/CHiC/round2_refBias/SNPs_and_LD_proxies_Jan2020.DpnII.marked.REFALTseqs.txt")
+base_atac <- fread("../../BaseQTL_results/ATAC/round2_refBias/atac_stan.summary.txt")
+base_rna <- fread("../../BaseQTL_results/RNA/p0.99.eqtl.summary.txt")
+
+### UPDATE 18th May 2023: take only distal sets 
+distal_sets <- fread("../input/Helen_trulyDistalSets.txt")
+distal_sets_small <- unique(distal_sets[, .(set, ENSG_Gene, ENSG_repGene)])
+
+trip[, Gene := tstrsplit(`Triplet name`, split = "/", keep = 3)]
+
+trip_distal1 <- trip[distal_sets_small, on = c(`Triplet ID` = "set", Gene = "ENSG_Gene"), nomatch = NULL]
+trip_distal1[, ENSG_repGene := NULL]
+trip_distal2 <- trip[distal_sets_small, on = c(`Triplet ID` = "set", Gene = "ENSG_repGene"), nomatch = NULL]
+trip_distal2[, ENSG_Gene := NULL]
+
+trip_distal <- unique(rbind(trip_distal1, trip_distal2))
+
+
+# put tables next to each other
+# have numbers next to graphs -no in different colours and the no in different directions
+# show at different cutoffs (0.5, 0.75 etc) of BaseQTL. If we relax BaseQTL we hope to see the ones with higher beta turning green.
+# don't need to show graphs, just want to see tables. purple/red stay and blues to become greens
+# and make GUESS more stringent - 99. do we see stuff in the middle disappearing?
+# by making GUESS stringent, do we have more concordance?
+# look at the ~100 that are intersected across all 3
+
+```
+
+### Combine for CHi-C modality
+
+```{r combine datasets: chic}
+# remove the GWAS regions (not eQTLs)
+base_chic_eQTLs <- base_chic[!int_id %like% "gwas"]
+
+# Remove the SNPs in BaseQTL that intersect DpnII cut sites.
+base_chic_eQTLs[, hg19Proxy_ID := tstrsplit(int_id, split = "_", keep = 1)]
+to_remove <- dpn[all_dpn_ALT %like% "TRUE" | all_dpn_REF %like% "TRUE" | dpn_REF_in_baitRight == TRUE]
+base_chic_dpn <- base_chic_eQTLs[!hg19Proxy_ID %in% to_remove$id]
+base_chic_dpn[, `BaseQTL inverse norm. approx.` := 1 - norm_approx]
+
+# Keep only the GUESS models that have only one SNP in the best model.
+# split the betas and the SEs into the three modalities.
+trip_distal[, c("chic_feat", "ATAC_peak", "Gene") := tstrsplit(`Triplet name`, split = "/")]
+trip_one <- trip_distal[!`Post-proc. best model SNP` %like% ","]
+trip_one[, c("GUESS_chic_beta", "GUESS_ATAC_beta", "GUESS_RNA_beta") := tstrsplit(`Post-proc. best model post. E(Beta|Y)`, split = ",", type.convert = T)]
+trip_one[, c("GUESS_chic_se", "GUESS_ATAC_se", "GUESS_RNA_se") := tstrsplit(`Post-proc. best model post. SE(Beta|Y)`, split = ",", type.convert = T)]
+
+# Generate Zscores in GUESS.
+trip_one[, GUESS_Zscore_CHiC := GUESS_chic_beta/GUESS_chic_se]
+trip_one[, GUESS_Zscore_ATAC := GUESS_ATAC_beta/GUESS_ATAC_se]
+trip_one[, GUESS_Zscore_RNA := GUESS_RNA_beta/GUESS_RNA_se]
+
+
+# Filter the GUESS data such that we only look at the interactions for encompassing DpnII fragment (to match BaseQTL analysis)
+# need to make sure that the SNP is within the same fragment that we are testing.
+# can use the dpn object.
+dpn_small <- unique(dpn[, .(Chr, baitStart, baitEnd, baitID, id, hg38Proxy_ID)])
+trip_one[, DpnID := tstrsplit(`Triplet name`, split = "_", keep = 1)]
+trip_one[, DpnID := as.numeric(str_replace_all(DpnID, "X", ""))]
+trip_one_dpn <- dpn_small[trip_one, on = c(id = "Post-proc. FDR mPPI SNP", baitID = "DpnID"), nomatch = NULL]
+trip_one_dpn[, hg38Proxy_pos := tstrsplit(hg38Proxy_ID, split = ":", keep = 2)]
+# check that they're in the correct fragment
+# trip_one_dpn[hg38Proxy_pos < baitEnd & hg38Proxy_pos > baitStart] # yes
+# separately, to get an idea of how many "features" we test in BaseQTL, combine it with the dpn object.
+base_chic_dpn_feat <- base_chic_dpn[dpn, on = c(hg19Proxy_ID = "id"), nomatch = NULL]
+base_chic_dpn_feat[, ENSG := tstrsplit(int_id, split = "_", keep = 2)]
+base_chic_dpn_feat[, chic_feat := paste(baitID, ENSG, Gene, sep = "_")]
+
+# Calculate the Zscores in BaseQTL. NOTE- these are log fold changes. Do not need to transform.
+base_chic_dpn[, Base_Zscore_CHiC := (log_mean_aFC)/(sd)]
+
+# combine GUESS data with chic BaseQTL
+both_chic <- trip_one_dpn[base_chic_dpn, on = c(id = "hg19Proxy_ID"), nomatch = NULL] # 199 lines
+
+# reason for duplicate lines is that sometimes there is more than one ATAC peak tested for each CHiC interaction
+# get columns for plotting
+both_chic[, GUESS_FDR := `Post-proc. FDR mPPI` > 0.95]
+both_chic[, BaseQTL_95 := `2.5%` < 0 & `97.5%` <0 | `2.5%` > 0 & `97.5%` >0 ]
+both_chic[GUESS_FDR == T & Signif.99 == "yes", significance := "Significant in both"]
+both_chic[GUESS_FDR == T & Signif.99 == "no", significance := "Significant at 5% FDR in GUESS"]
+both_chic[GUESS_FDR == F & Signif.99 == "yes", significance := "Significant at 99% CI in BaseQTL"]
+both_chic[GUESS_FDR == F & Signif.99 == "no", significance := "Non significant"]
+both_chic[AI_estimate < 0.4, AI_est := "<0.4"]
+both_chic[AI_estimate > 0.4, AI_est := ">0.4"]
+both_chic[is.na(AI_estimate), AI_est := "unavailable"]
+
+# signify the post proc probability values
+both_chic[, `GUESS Post-proc. best model post. prob. > 0.95` := `Post-proc. best model post. prob.` > 0.95]
+fwrite(both_chic, file = "../comparisons/CHiC_BaseQTL_GUESS_Zscores.txt", sep = "\t", row.names = F, col.names = T, quote = F)
+# get an idea of overall numbers
+noSNPs <- length(unique(both_chic$hg38Proxy_ID))  
+print(paste0("The number of SNPs that can be compared across GUESS and BaseQTL CHiC is ", noSNPs))
+noModels <- length(unique(both_chic$`Triplet name`)) 
+print(paste0("The number of models that will be compared across GUESS and BaseQTL CHiC is ", noModels))
+# remember that there are more models than SNPs because we are testing more than one ATAC peak for some of them.
+
+totalSNPs_BaseQTL <- length(unique(base_chic_dpn$hg19Proxy_ID))
+totalSNPs_GUESS <- length(unique(trip_one$`Post-proc. best model SNP`))
+totalCHiC_BaseQTL <- length(unique(base_chic_dpn_feat$chic_feat))
+totalCHiC_GUESS <- length(unique(trip_one$chic_feat))
+intersectCHiC <- length(unique(both_chic$chic_feat))
+
+chic <- data.frame(Dataset = c("BaseQTL", "GUESS", "Intersect"), 
+                  SNPs = c(totalSNPs_BaseQTL, totalSNPs_GUESS, noSNPs), 
+                  CHiC_features = c(totalCHiC_BaseQTL, totalCHiC_GUESS, intersectCHiC))
+print(chic)
+# "Intersect" is the subset that we see in the following graphs.
+```
+### Chec how many of the BaseQTL SNPs we recalled with Triplet data
+```{R}
+both_chic_sig <- both_chic[Signif.99 == "yes"]
+
+
+```
+
+
+### plot the chic/GUESS modality
+```{R CHiC plots}
+
+# Get the correlation. Can use pearson, because we expect them to be linear.
+#ci_cor(both_chic$GUESS_Zscore_CHiC, both_chic$Base_Zscore_CHiC, method="spearman", type = "bootstrap")
+spearman <- cor.test(both_chic$GUESS_Zscore_CHiC, both_chic$Base_Zscore_CHiC, method="spearman")
+spearman_cc <- round(spearman$estimate, digits = 3)
+spearman_p <- formatC(spearman$p.value, format = "e", digits = 2)
+corr_result <- paste0("Spearman's rho ", spearman_cc, ", p value ", spearman_p)
+
+# Get the percentage concordant.
+both_chic[GUESS_Zscore_CHiC < 0 & Base_Zscore_CHiC < 0, concordance := "Concordant"]
+both_chic[GUESS_Zscore_CHiC > 0 & Base_Zscore_CHiC > 0, concordance := "Concordant"]
+both_chic[GUESS_Zscore_CHiC > 0 & Base_Zscore_CHiC < 0, concordance := "Non-concordant"]
+both_chic[GUESS_Zscore_CHiC < 0 & Base_Zscore_CHiC > 0, concordance := "Non-concordant"]
+to_table <- unique(both_chic[, .(hg38Proxy_ID, concordance)])
+concordance <- as.data.table(table(to_table$concordance))
+percent_concordant <- round((concordance[V1 == "Concordant", N]/(concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N])*100), 1)
+conc <-   concordance[V1 == "Concordant", N]
+total <- concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N]
+report <- paste0(percent_concordant, "% concordant (", conc, "/", total, ")")
+
+# Plot the Zscores. Mark baseline allelic imbalance in case it is noticably important.
+ggplot(both_chic, aes(x = `GUESS_Zscore_CHiC`, y = `Base_Zscore_CHiC`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL CHi-C") + 
+  annotate("text", x = -5, y= 4.7, label = corr_result, hjust = 0, size = 5) +
+  annotate("text", x = -5, y = 3.9, label = report, hjust = 0, size =5) +
+  xlim(-5, 5) + ylim(-5, 5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom") + 
+  theme(text = element_text(size = 10), axis.text.x = element_text(size = 10))
+
+
+### Make a version for the paper supplementary
+pdf(file = "~/Documents/analysis/paper/Revision/chic_GUESS_BASE_Zscores.pdf")
+ggplot(both_chic, aes(x = `GUESS_Zscore_CHiC`, y = `Base_Zscore_CHiC`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL CHi-C") + 
+  annotate("text", x = -5, y= 4.7, label = corr_result, hjust = 0, size = 4) +
+  annotate("text", x = -5, y = 3.9, label = report, hjust = 0, size =4) +
+  xlim(-5, 5) + ylim(-5, 5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom", text = element_text(size = 15))
+dev.off()
+
+# make a version with the legend at the side
+pdf(file = "~/Documents/analysis/paper/Revision/chic_GUESS_BASE_Zscores_legend.pdf")
+ggplot(both_chic, aes(x = `GUESS_Zscore_CHiC`, y = `Base_Zscore_CHiC`, col = significance)) +
+  geom_point() +
+  xlab("Bayes Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL CHi-C") + 
+  annotate("text", x = -5, y= 4.7, label = corr_result, hjust = 0, size = 4) +
+  annotate("text", x = -5, y = 3.9, label = report, hjust = 0, size =4) +
+  xlim(-5, 5) + ylim(-5, 5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(text = element_text(size = 15))
+dev.off()
+
+
+
+```
+
+Now, plot on different values of beta at mPPI >= 0.95 and define a cutoff.
+
+```{R CHiC plots beta values}
+quantile(both_chic$GUESS_chic_beta)
+sig <- both_chic[GUESS_FDR == T]
+
+mybetas <- seq(0, 0.1, 0.001)
+
+toplot <- data.table()
+for(beta in mybetas) {
+  cutoff <- sig[abs(GUESS_chic_beta) >= beta]
+  toTest <- unique(cutoff[, .(`Triplet name`, `id`, GUESS_Zscore_CHiC, Base_Zscore_CHiC)])
+  overlaps <- length(unique(toTest$`id`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_Zscore_CHiC, toTest$Base_Zscore_CHiC, method="spearman", type = "bootstrap", 
+                                 R = 1200))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Beta_cutoff = beta, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Beta_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("GUESS versus BaseQTL CHi-C Zscores, correlation at abs beta cutoffs with 95% CI") +
+  scale_x_continuous(name ="Beta cutoff, CHi-C", breaks = seq(0, 0.1, 0.005)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Beta_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[abs(GUESS_chic_beta) >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_Zscore_CHiC, y = Base_Zscore_CHiC, col = significance)) + 
+  geom_point() + 
+  xlab("GUESS CHiC Zscore of beta") +
+  ylab("BaseQTL CHiC Zscore of aFC") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS versus BaseQTL CHi-C, effect sizes at Beta >=", cutoff))
+}
+
+cutoff = 0
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.006
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.011
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+
+
+```
+
+
+
+### Combine for ATAC modality
+
+```{R combine datasets: ATAC}
+# Get the normal approximation for the ATAC data
+base_atac[, norm_approx := 1-pnorm(0, abs(log_mean_aFC), sd, lower.tail = FALSE)]
+base_atac[, `BaseQTL inverse norm. approx.` := 1 - norm_approx]
+
+# Again use only the GUESS models that have only one SNP in the best model.
+# get the location of ATAC peaks to combine with BaseQTL
+trip_one_peaks <- peak_locs[trip_one, on = c(Peak_name = "ATAC_peak")]
+base_atac[, c("Chr_peakStart", "peakEnd", "hg19Proxy_ID") := tstrsplit(int_id, split = "-", type.convert = T)]
+base_atac[, c("Chr", "peakStart") := tstrsplit(Chr_peakStart, split = ":", type.convert = T)]
+base_atac[, chrom := paste0("chr", Chr)]
+
+# Get the Zscores
+base_atac[, Base_Zscore_ATAC := (log_mean_aFC)/(sd)]
+
+# combine
+both_atac <- base_atac[trip_one_peaks, on =c("chrom", "peakStart", "peakEnd", hg19Proxy_ID = "Post-proc. FDR mPPI SNP"), nomatch = NULL]
+
+# get columns for plotting
+both_atac[, GUESS_FDR := `Post-proc. FDR mPPI` > 0.95]
+both_atac[, BaseQTL_95 := `2.5%` < 0 & `97.5%` <0 | `2.5%` > 0 & `97.5%` >0 ]
+both_atac[GUESS_FDR == T & Signif.99 == "yes", significance := "Significant in both"]
+both_atac[GUESS_FDR == T & Signif.99 == "no", significance := "Significant at 5% FDR in GUESS"]
+both_atac[GUESS_FDR == F & Signif.99 == "yes", significance := "Significant at 99% CI in BaseQTL"]
+both_atac[GUESS_FDR == F & Signif.99 == "no", significance := "Non significant"]
+both_atac[AI_estimate < 0.4, AI_est := "<0.4"]
+both_atac[AI_estimate > 0.4, AI_est := ">0.4"]
+both_atac[is.na(AI_estimate), AI_est := "unavailable"]
+
+# signify the post proc probability values
+both_atac[, `GUESS Post-proc. best model post. prob. > 0.95` := `Post-proc. best model post. prob.` > 0.95]
+fwrite(both_atac, file = "./ATAC_BaseQTL_GUESS_Zscores.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# get an idea of overall numbers
+noSNPs <- length(unique(both_atac$hg19Proxy_ID))   
+print(paste0("The number of SNPs that can be compared across GUESS and BaseQTL ATAC is ", noSNPs))
+noModels <- length(unique(both_atac$`Triplet name`)) 
+print(paste0("The number of models that will be compared across GUESS and BaseQTL ATAC is ", noModels))
+# there are more models than SNPs because we are testing more than one CHiC peak for some of them.
+totalSNPs_BaseQTL <- length(unique(base_atac$hg19Proxy_ID))
+totalSNPs_GUESS <- length(unique(trip_one$`Post-proc. best model SNP`))
+totalPeaks_BaseQTL <- length(unique(base_atac$Chr_peakStart))
+totalPeaks_GUESS <- length(unique(trip_one$ATAC_peak))
+intersectPeaks <- length(unique(both_atac$Peak_name))
+
+atac <- data.frame(Dataset = c("BaseQTL", "GUESS", "Intersect"), 
+                  SNPs = c(totalSNPs_BaseQTL, totalSNPs_GUESS, noSNPs), 
+                  Peaks = c(totalPeaks_BaseQTL, totalPeaks_GUESS, intersectPeaks))
+print(atac)
+
+# "Intersect" is the subset that we see in the following graphs.
+# note that there are many SNPs in BaseQTL ATAC because it was done genome-wide.
+
+```
+
+### plot the ATAC/GUESS modality
+```{R ATAC plots}
+# Get the correlation. Can use pearson, because we expect them to be linear.
+#ci_cor(both_atac$GUESS_Zscore_ATAC, both_atac$Base_Zscore_ATAC, method="spearman", type = "bootstrap")
+spearman <- cor.test(both_atac$GUESS_Zscore_ATAC, both_atac$Base_Zscore_ATAC, method="spearman")
+spearman_cc <- round(spearman$estimate, digits = 3)
+spearman_p <- formatC(spearman$p.value, format = "e", digits = 3)
+corr_result <- paste0("Spearman's rho ", spearman_cc, ", p value ", "< 2.2e-16")
+
+# Get the percentage concordant.
+both_atac[GUESS_Zscore_ATAC < 0 & Base_Zscore_ATAC < 0, concordance := "Concordant"]
+both_atac[GUESS_Zscore_ATAC > 0 & Base_Zscore_ATAC > 0, concordance := "Concordant"]
+both_atac[GUESS_Zscore_ATAC > 0 & Base_Zscore_ATAC < 0, concordance := "Non-concordant"]
+both_atac[GUESS_Zscore_ATAC < 0 & Base_Zscore_ATAC > 0, concordance := "Non-concordant"]
+to_table <- unique(both_atac[, .(hg19Proxy_ID, concordance)])
+concordance <- as.data.table(table(to_table$concordance))
+percent_concordant <- round((concordance[V1 == "Concordant", N]/(concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N])*100), 1)
+conc <-   concordance[V1 == "Concordant", N]
+total <- concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N]
+report <- paste0(percent_concordant, "% concordant (", conc, "/", total, ")")
+
+# Plot the Zscores. Mark baseline allelic imbalance in case it is noticably important.
+ggplot(both_atac, aes(x = `GUESS_Zscore_ATAC`, y = `Base_Zscore_ATAC`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL ATAC") + 
+  annotate("text", x = -24, y= 23.7, label = corr_result, hjust = 0, size = 3) +
+  annotate("text", x = -24, y = 20, label = report, hjust = 0, size =3) +
+  xlim(-24, 24) + ylim(-24, 24) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom")
+
+
+### Make a version for the paper supplementary
+pdf(file = "~/Documents/analysis/paper/Revision/ATAC_GUESS_BASE_Zscores.pdf")
+ggplot(both_atac, aes(x = `GUESS_Zscore_ATAC`, y = `Base_Zscore_ATAC`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL ATAC") + 
+  annotate("text", x = -24, y= 23.7, label = corr_result, hjust = 0, size = 4) +
+  annotate("text", x = -24, y = 20, label = report, hjust = 0, size =4) +
+  xlim(-24, 24) + ylim(-24, 24) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom",  text = element_text(size = 15))
+dev.off()
+
+
+```
+
+Define a cutoff for ATAC
+
+```{R ATAC plots beta values}
+quantile(both_atac$GUESS_ATAC_beta)
+sig <- both_atac[GUESS_FDR == T]
+
+mybetas <- seq(0, 0.1, 0.001)
+
+toplot <- data.table()
+for(beta in mybetas) {
+  cutoff <- sig[abs(GUESS_ATAC_beta) >= beta]
+  toTest <- unique(cutoff[, .(`Triplet name`, `hg19Proxy_ID`, GUESS_Zscore_ATAC, Base_Zscore_ATAC)])
+  overlaps <- length(unique(toTest$`hg19Proxy_ID`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_Zscore_ATAC, toTest$Base_Zscore_ATAC, method="spearman", type = "bootstrap", 
+                                 R = 1200))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Beta_cutoff = beta, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Beta_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("GUESS versus BaseQTL ATAC Zscores, correlation at abs beta cutoffs wiht 95% CI") +
+  scale_x_continuous(name ="Beta cutoff, ATAC", breaks = seq(0, 0.1, 0.005)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Beta_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[abs(GUESS_ATAC_beta) >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_Zscore_ATAC, y = Base_Zscore_ATAC, col = significance)) + 
+  geom_point() + 
+  xlab("GUESS ATAC Zscore of beta") +
+  ylab("BaseQTL ATAC Zscore of aFC") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS versus BaseQTL ATAC Zscore, effect sizes at Beta >=", cutoff))
+}
+
+cutoff = 0
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.001
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.01
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.02
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+
+```
+
+### Combine for RNA modality
+
+```{R combine datasets: RNA}
+# Get the normal approximation for the RNA data
+base_rna[, norm_approx := 1-pnorm(0, abs(log2_aFC_mean), log2_aFC_sd, lower.tail = FALSE)]
+base_rna[, `BaseQTL inverse norm. approx.` := 1 - norm_approx]
+
+# Again use only the GUESS models that have only one SNP in the best model.
+trip_one[, ENSG_gene := tstrsplit(`Triplet name`, split = "/", keep = 3)]
+trip_one[, ENSG := tstrsplit(ENSG_gene, split = "_", keep = 1)]
+
+# SNPs in the ATAC-seq data do not have chromosomes in the ID, so remove it in GUESS data as well.
+trip_one[, SNP_noChr := sub(".*?:", "", `Post-proc. FDR mPPI SNP`)]
+
+# Get the Zscores
+base_rna[, Base_Zscore_RNA := (log2_aFC_mean)/(log2_aFC_sd)]
+
+
+# combine
+both_rna <- base_rna[trip_one, on =c(Gene_id = "ENSG", SNP = "SNP_noChr"), nomatch = NULL]
+
+# get columns for plotting
+both_rna[, GUESS_FDR := `Post-proc. FDR mPPI` > 0.95]
+both_rna[, BaseQTL_95 := `log2_aFC_2.5%` < 0 & `log2_aFC_97.5%` <0 | `log2_aFC_2.5%` > 0 & `log2_aFC_97.5%` >0 ]
+both_rna[GUESS_FDR == T & null.99 == "no", significance := "Significant in both"]
+both_rna[GUESS_FDR == T & null.99 == "yes", significance := "Significant at 5% FDR in GUESS"]
+both_rna[GUESS_FDR == F & null.99 == "no", significance := "Significant at 99% CI in BaseQTL"]
+both_rna[GUESS_FDR == F & null.99 == "yes", significance := "Non significant"]
+both_rna[min_AI < 0.4, AI_est := "<0.4"]
+both_rna[min_AI > 0.4, AI_est := ">0.4"]
+both_rna[is.na(min_AI), AI_est := "unavailable"]
+
+# signify the post proc probability values
+both_rna[, `GUESS Post-proc. best model post. prob. > 0.95` := `Post-proc. best model post. prob.` > 0.95]
+both_rna2 <- copy(both_rna)
+setnames(both_rna2, "log2_aFC_mean", "log_mean_aFC")
+fwrite(both_rna2, file = "./RNA_BaseQTL_GUESS_Zscores.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+# get an idea of overall numbers
+noSNPs <- length(unique(both_rna$SNP))  
+print(paste0("The number of SNPs that can be compared across GUESS and BaseQTL RNA is ", noSNPs))
+noModels <- length(unique(both_rna$`Triplet name`)) 
+print(paste0("The number of Triplet Features that will be compared across GUESS and BaseQTL RNA is ", noModels))
+# there are more models than SNPs because we are testing more than one CHiC peak and ATAC peak for some of them.
+totalSNPs_BaseQTL <- length(unique(base_rna$SNP))
+totalSNPs_GUESS <- length(unique(trip_one$`Post-proc. best model SNP`))
+totalGenes_BaseQTL <- length(unique(base_rna$Gene_id))
+totalGenes_GUESS <- length(unique(trip_one$ENSG))
+intersectGenes <- length(unique(both_rna$Gene_id))
+
+rna <- data.frame(Dataset = c("BaseQTL", "GUESS", "Intersect"), 
+                  SNPs = c(totalSNPs_BaseQTL, totalSNPs_GUESS, noSNPs), 
+                  Genes = c(totalGenes_BaseQTL, totalGenes_GUESS, intersectGenes))
+print(rna)
+
+# "Intersect" is the subset that we see in the following graphs.
+```
+
+### plot the RNA/GUESS modality
+```{R RNA plots}
+# Get the correlation. Can use pearson, because we expect them to be linear.
+#ci_cor(both_rna$GUESS_Zscore_RNA, both_rna$Base_Zscore_RNA, method="spearman", type = "bootstrap")
+spearman <- cor.test(both_rna$GUESS_Zscore_RNA, both_rna$Base_Zscore_RNA, method="spearman")
+spearman_cc <- round(spearman$estimate, digits = 3)
+spearman_p <- formatC(spearman$p.value, format = "e", digits = 3)
+corr_result <- paste0("Spearman's rho ", spearman_cc, ", p value ", spearman_p)
+
+# Get the percentage concordant.
+both_rna[GUESS_Zscore_RNA < 0 & Base_Zscore_RNA < 0, concordance := "Concordant"]
+both_rna[GUESS_Zscore_RNA > 0 & Base_Zscore_RNA > 0, concordance := "Concordant"]
+both_rna[GUESS_Zscore_RNA > 0 & Base_Zscore_RNA < 0, concordance := "Non-concordant"]
+both_rna[GUESS_Zscore_RNA < 0 & Base_Zscore_RNA > 0, concordance := "Non-concordant"]
+to_table <- unique(both_rna[, .(SNP, concordance)])
+concordance <- as.data.table(table(to_table$concordance))
+percent_concordant <- round((concordance[V1 == "Concordant", N]/(concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N])*100), 1)
+conc <-   concordance[V1 == "Concordant", N]
+total <- concordance[V1 == "Non-concordant", N]+concordance[V1=="Concordant", N]
+report <- paste0(percent_concordant, "% concordant (", conc, "/", total, ")")
+
+# Plot the Zscores. Mark baseline allelic imbalance in case it is noticably important.
+ggplot(both_rna, aes(x = `GUESS_Zscore_RNA`, y = `Base_Zscore_RNA`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL RNA") + 
+  annotate("text", x = -12, y= 11.7, label = corr_result, hjust = 0, size = 3) +
+  annotate("text", x = -12, y = 9, label = report, hjust = 0, size =3) +
+  ylim(-12,12) + xlim(-12,12) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom")
+
+# make a figure
+pdf(file = "~/Documents/analysis/paper/Revision/RNA_GUESS_Base_Zscores.pdf")
+ggplot(both_rna, aes(x = `GUESS_Zscore_RNA`, y = `Base_Zscore_RNA`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL RNA") + 
+  annotate("text", x = -12, y= 11.7, label = corr_result, hjust = 0, size = 4) +
+  annotate("text", x = -12, y = 10, label = report, hjust = 0, size =4) +
+  ylim(-12,12) + xlim(-12,12) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") + 
+  theme(legend.position="bottom", text = element_text(size = 15))
+dev.off()
+
+# make a figure with the legend at the side
+pdf(file = "~/Documents/analysis/paper/Revision/RNA_GUESS_Base_Zscores_legend.pdf")
+ggplot(both_rna, aes(x = `GUESS_Zscore_RNA`, y = `Base_Zscore_RNA`, col = significance)) +
+  geom_point() +
+  xlab("GUESS Zscore") +
+  ylab("BaseQTL Zscore") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle("GUESS versus BaseQTL RNA") + 
+  annotate("text", x = -12, y= 11.7, label = corr_result, hjust = 0, size = 3) +
+  annotate("text", x = -12, y = 10, label = report, hjust = 0, size =3) +
+  ylim(-12,12) + xlim(-12,12) +
+  geom_abline(slope = 1, intercept = 0, linetype="dotted", color = "gray40") +
+  theme(text = element_text(size = 15))
+dev.off()
+
+
+```
+
+```{R RNA plots beta values}
+quantile(both_rna$GUESS_RNA_beta)
+sig <- both_rna[GUESS_FDR == T]
+
+mybetas <- seq(0, 0.1, 0.001)
+
+toplot <- data.table()
+for(beta in mybetas) {
+  cutoff <- sig[abs(GUESS_RNA_beta) >= beta]
+  toTest <- unique(cutoff[, .(`Triplet name`, `SNP`, GUESS_Zscore_RNA, Base_Zscore_RNA)])
+  overlaps <- length(unique(toTest$`SNP`))
+  Triplets <- length(unique(toTest$`Triplet name`))
+  res <- suppressWarnings(ci_cor(toTest$GUESS_Zscore_RNA, toTest$Base_Zscore_RNA, method="spearman", type = "bootstrap", 
+                                 R = 1200))
+  Rho <- res$estimate
+  CI_2.5 <- res$interval[[1]]
+  CI_97.5 <- res$interval[[2]]
+  toplot_mybeta <- data.table(Beta_cutoff = beta, Spearman_Rho = Rho, CI_2.5 = CI_2.5, CI_97.5 = CI_97.5, 
+                              No.SNPS = overlaps, No.Triplets = Triplets)
+  toplot <- rbind(toplot, toplot_mybeta)
+}
+
+ggplot(toplot, aes(x = Beta_cutoff, y = Spearman_Rho, col = No.SNPS)) + 
+  geom_line() + 
+  ylab("Spearman Rho") +
+  ggtitle("GUESS versus BaseQTL RNA, correlation at abs beta cutoffs wiht 95% CI") +
+  scale_x_continuous(name ="Beta cutoff, RNA", breaks = seq(0, 0.1, 0.005)) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_color_gradientn(colors = colorspace::rainbow_hcl(50)) +
+  geom_errorbar(aes(x = Beta_cutoff, y = Spearman_Rho, ymin = CI_2.5, ymax = CI_97.5))
+
+### then plot at certain cutoffs
+make_corPlot <- function(dt, cutoff) {
+  toPlot <- dt[abs(GUESS_RNA_beta) >= cutoff]
+  ggplot(toPlot, aes(x = GUESS_Zscore_RNA, y = Base_Zscore_RNA, col = significance)) + 
+  geom_point() + 
+  xlab("GUESS RNA Zscore beta") +
+  ylab("BaseQTL RNA Zscore aFC") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  ggtitle(paste0("GUESS versus BaseQTL RNA Zscore, effect sizes at Beta >=", cutoff))
+}
+
+cutoff = 0
+p <- make_corPlot(sig, cutoff)
+print(p)
+cutoff = 0.004
+p <- make_corPlot(sig, cutoff)
+print(p)
+cutoff = 0.01
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.015
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.02 # at this cutoff we already lose a significnat BaseQTL result
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+cutoff = 0.05 # at this cutoff we already lose a significnat BaseQTL result
+p <- make_corPlot(sig, cutoff)
+print(p)
+
+
+```
+
+How many triplets and SNPs do we retain at these cutoffs?
+Can we define a "Zscore" that corresponds to these cutoffs?
+
+```{R overall res}
+# using:
+chic_cutoff = 0.006
+atac_cutoff = 0.001
+expr_cutoff = 0.004
+
+# find the mean SE across each modality
+chic <- unique(both_chic[GUESS_FDR == T, c("id", "Triplet name", "GUESS_chic_beta", "GUESS_chic_se", "GUESS_Zscore_CHiC")])
+chic_mean_SE <- mean(chic$GUESS_chic_se)
+chic$meanZscore <- abs(chic$GUESS_chic_beta/chic_mean_SE)
+remove <- chic[abs(GUESS_chic_beta) < 0.006]
+keep <- chic[abs(GUESS_chic_beta) >= 0.006]
+range(abs(remove$GUESS_Zscore_CHiC))
+range(abs(keep$GUESS_Zscore_CHiC))
+range(remove$meanZscore)
+range(keep$meanZscore)
+
+cor.test(abs(chic$GUESS_chic_beta), abs(chic$GUESS_chic_se), method = "spearman")
+p <- ggplot(chic, aes(x = abs(GUESS_chic_se), y = abs(GUESS_chic_beta))) + geom_point()
+p
+mybetas <- seq(0, 0.1, 0.001)
+
+#toplot <- data.table()
+#for(beta in mybetas) {
+#  cutoff <- sig[abs(GUESS_chic_beta) >= beta]
+#  toTest <- unique(cutoff[, .(`Triplet name`, `id`, GUESS_Zscore_CHiC, Base_Zscore_CHiC)])
+#}
+
+# in one snp model data
+sig <- trip_one[`Post-proc. FDR mPPI` >= 0.95]
+length(unique(sig$`Post-proc. FDR mPPI SNP`)) #  655
+length(unique(sig$`Triplet name`)) # 1079
+new <- sig[abs(GUESS_chic_beta) >= chic_cutoff & abs(GUESS_ATAC_beta) >= atac_cutoff & abs(GUESS_RNA_beta) >= expr_cutoff]
+length(unique(new$`Post-proc. FDR mPPI SNP`)) #  484
+length(unique(new$`Triplet name`)) # 713
+
+# in all models, including multi SNPs
+# have to put betas on new line for each sig SNP
+trip_sig <- trip_distal[`Post-proc. FDR mPPI SNP` != ""]
+# change every third delimiter to ";"
+trip_sig[, "Post-proc. FDR mPPI post. mean Beta perSNP" := gsub("((?:[^,]+,){2}[^,]+),", "\\1;", `Post-proc. FDR mPPI post. mean Beta`) ]
+# Do the same for the SNP, but every delimiter to ";"
+trip_sig[, "Post-proc. FDR mPPI SNP single" := str_replace_all(`Post-proc. FDR mPPI SNP`, ",", ";")]
+
+trip_sig[, ]
+
+trip_newRows <- as.data.table(trip_sig %>% separate_rows(c(`Post-proc. FDR mPPI SNP single`, `Post-proc. FDR mPPI post. mean Beta perSNP`), sep = ";"))
+
+trip_newRows[, c("GUESS_chic_beta", "GUESS_ATAC_beta", "GUESS_RNA_beta") := tstrsplit(`Post-proc. FDR mPPI post. mean Beta perSNP`, split = ",", type.convert = T)]
+
+trip_newRows[, Gene := tstrsplit(`Triplet name`, split = "/", keep = 3)]
+
+#trip_newRows[`Post-proc. best model size` > 1]
+
+length(unique(trip_newRows$`Post-proc. FDR mPPI SNP single`)) #  828
+length(unique(trip_newRows$`Triplet name`)) # 1329
+length(unique(trip_newRows$Gene)) # 256
+
+######### FINAL NUMBERS SHOWN HERE
+sigNewNewrows <- trip_newRows[abs(GUESS_chic_beta) >= chic_cutoff & abs(GUESS_ATAC_beta) >= atac_cutoff & abs(GUESS_RNA_beta) >= expr_cutoff]
+length(unique(sigNewNewrows$`Post-proc. FDR mPPI SNP`)) 
+length(unique(sigNewNewrows$`Triplet name`)) 
+length(unique(sigNewNewrows$Gene)) # 224
+#fwrite(sigNewNewrows, file = "../GUESS_DpnII_distal_betas.txt", sep = "\t", quote = F, row.names = F, col.names = T)
+#########
+
+
+######### Generate confusion matrix for each of the modalities at this cutoff 
+make_confusion_matrix <- function(dt, col1, col2) {
+  dt[get(col1) < 0, GUESS_sign := factor("negative")]
+  dt[get(col1) > 0, GUESS_sign := factor("positive")]
+  dt[get(col2) < 0, BASE_sign := factor("negative")]
+  dt[get(col2) > 0, BASE_sign := factor("positive")]
+  return(dt)
+}
+
+chic_both0.006 <- both_chic[abs(GUESS_chic_beta) >= 0.006 & GUESS_FDR == T]
+chic_cm <- make_confusion_matrix(chic_both0.006, "GUESS_chic_beta", "log_mean_aFC")
+confusionMatrix(data=chic_cm$GUESS_sign, reference = chic_cm$BASE_sign)
+chisq.test(chic_cm$GUESS_sign, chic_cm$BASE_sign)
+
+atac_both0.001 <- both_atac[abs(GUESS_ATAC_beta) >= 0.001 & GUESS_FDR == T]
+atac_cm <- make_confusion_matrix(atac_both0.001, "GUESS_ATAC_beta", "log_mean_aFC")
+confusionMatrix(data=atac_cm$GUESS_sign, reference = atac_cm$BASE_sign)
+chisq.test(atac_cm$GUESS_sign, atac_cm$BASE_sign)
+
+rna_both0.004 <- both_rna[abs(GUESS_ATAC_beta) >= 0.004 & GUESS_FDR == T]
+rna_cm <- make_confusion_matrix(rna_both0.004, "GUESS_ATAC_beta", "log2_aFC_mean")
+confusionMatrix(data=rna_cm$GUESS_sign, reference = rna_cm$BASE_sign)
+chisq.test(rna_cm$GUESS_sign, rna_cm$BASE_sign)
+
+```
+
+```{R}
+### How many of our regions were the effects going in the same direction?
+library(pheatmap)
+heat <- unique(sigNewNewrows[, .(`Triplet name`, `Post-proc. FDR mPPI SNP single`, GUESS_chic_beta, GUESS_ATAC_beta, GUESS_RNA_beta)])
+heat[, ID := paste(`Triplet name`, `Post-proc. FDR mPPI SNP single`, sep = "_")]
+heat[, c("Triplet name", "Post-proc. FDR mPPI SNP single") := NULL]
+heat_df <- as.data.frame(heat)
+rownames(heat_df) <- heat_df[,4]
+heat_df2 <- heat_df[ -c(4) ]
+heat_df2
+
+library(RColorBrewer)
+paletteLength <- 50
+myColor <- colorRampPalette(c("#0072B2", "white", "orangered3"))(paletteLength)
+myBreaks <- c(seq(min(heat_df2), 0, length.out = ceiling(paletteLength/2) + 1), 
+                  seq(max(heat_df2)/paletteLength, max(heat_df2), length.out = floor(paletteLength/2)))
+p <- pheatmap(heat_df2, cluster_rows = T, cluster_cols = F, color = myColor, breaks = myBreaks, show_rownames = F, clustering_distance_rows = "euclidean")
+save_pheatmap_pdf <- function(x, filename, width=6, height=6) {
+    stopifnot(!missing(x))
+    stopifnot(!missing(filename))
+    pdf(filename, width=width, height=height)
+    grid::grid.newpage()
+    grid::grid.draw(x$gtable)
+    dev.off()
+}
+save_pheatmap_pdf(p, "../pheatmap_GUESS_betaFilt.pdf")
+
+```
